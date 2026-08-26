@@ -7,6 +7,7 @@ from discord.ext import commands
 from dotenv import load_dotenv
 
 from club_management import OfferView, setup as setup_club_management
+from dashboard import Dashboard
 from database import Database
 
 load_dotenv()
@@ -35,10 +36,12 @@ class ProClubsBot(commands.Bot):
         self.database = Database(database_path)
         logging.info("Using database at %s", database_path)
         self.sync_task: asyncio.Task | None = None
+        self.dashboard = Dashboard(self, self.database)
 
     async def setup_hook(self) -> None:
         self.database.setup()
         await setup_club_management(self, self.database)
+        await self.dashboard.start()
 
         for offer in self.database.pending_offers():
             self.add_view(OfferView(self, self.database, offer["id"]), message_id=offer["message_id"])
@@ -47,6 +50,16 @@ class ProClubsBot(commands.Bot):
         logging.info("Logged in as %s (%s)", self.user, self.user.id if self.user else "unknown")
         if self.sync_task is None:
             self.sync_task = asyncio.create_task(self.sync_commands())
+
+    async def on_interaction(self, interaction: discord.Interaction) -> None:
+        if interaction.type in (discord.InteractionType.component, discord.InteractionType.modal_submit):
+            custom_id = str(interaction.data.get("custom_id", "component")) if interaction.data else "component"
+            self.database.add_audit(
+                interaction.guild_id,
+                interaction.user.id,
+                "Component used",
+                custom_id,
+            )
 
     async def sync_commands(self) -> None:
         """Sync without delaying the bot's connection to Discord."""
@@ -69,3 +82,4 @@ if not token:
     raise RuntimeError("DISCORD_TOKEN is missing. Copy .env.example to .env and add your token.")
 
 ProClubsBot().run(token)
+
