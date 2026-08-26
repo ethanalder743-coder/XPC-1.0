@@ -1,3 +1,4 @@
+import asyncio
 import io
 import re
 import sqlite3
@@ -221,12 +222,17 @@ class TicketCloseView(discord.ui.View):
         await interaction.channel.send(
             embed=discord.Embed(
                 title="Ticket Closed",
-                description=f"Closed by {member.mention}.",
+                description=f"Closed by {member.mention}. This channel will be deleted in 10 seconds.",
                 color=discord.Color.red(),
                 timestamp=discord.utils.utcnow(),
             )
         )
-        await interaction.followup.send("Ticket closed.", ephemeral=True)
+        await interaction.followup.send("Ticket closed. The channel will be deleted in 10 seconds.", ephemeral=True)
+        await asyncio.sleep(10)
+        try:
+            await interaction.channel.delete(reason=f"Closed ticket deleted after 10 seconds by {member}")
+        except discord.NotFound:
+            pass
 
 
 class TicketProblemSelect(discord.ui.Select):
