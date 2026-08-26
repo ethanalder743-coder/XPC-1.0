@@ -72,6 +72,12 @@ class Dashboard:
         return self.authenticated(request) and hmac.compare_digest(request.headers.get("X-Dashboard-Token", ""), self.token)
 
     async def home(self, request):
+        if not self.password:
+            return web.Response(
+                text="XPC bot is online. Set DASHBOARD_PASSWORD in Railway to enable the private control panel.",
+                content_type="text/plain",
+                status=503,
+            )
         if not self.authenticated(request):
             return web.Response(text=LOGIN_PAGE.replace("__ERROR__", ""), content_type="text/html")
         return web.Response(text=DASHBOARD_PAGE.replace("__CSRF__", json.dumps(self.token)), content_type="text/html")
@@ -208,8 +214,6 @@ class Dashboard:
         return web.Response(text="self.addEventListener('install',()=>self.skipWaiting());self.addEventListener('fetch',()=>{});", content_type="application/javascript")
 
     async def start(self) -> None:
-        if not self.password:
-            return
         app = web.Application(client_max_size=1024 * 1024)
         app.add_routes([web.get("/", self.home), web.post("/login", self.login), web.post("/logout", self.logout), web.get("/api/guilds", self.guilds), web.get("/api/state", self.state), web.get("/api/public/league", self.public_league), web.post("/api/toggle", self.toggle), web.post("/api/budget", self.budget), web.post("/api/team", self.add_team), web.post("/api/team-logo", self.team_logo), web.post("/api/fixture", self.add_fixture), web.post("/api/trophy", self.add_trophy), web.post("/api/trophy-award", self.award_trophy), web.post("/api/window", self.window), web.get("/manifest.json", self.manifest), web.get("/sw.js", self.service_worker)])
         self.runner = web.AppRunner(app); await self.runner.setup(); site = web.TCPSite(self.runner, "0.0.0.0", int(os.getenv("PORT", "8080"))); await site.start()
