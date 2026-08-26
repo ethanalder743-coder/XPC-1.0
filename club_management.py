@@ -52,35 +52,40 @@ def render_welcome_card(
     with Image.open(banner_path) as source:
         background = ImageOps.fit(source.convert("RGB"), (width, height), Image.Resampling.LANCZOS)
     card = background.convert("RGBA")
-    card.alpha_composite(Image.new("RGBA", card.size, (8, 10, 18, 105)))
+    card.alpha_composite(Image.new("RGBA", card.size, (8, 10, 18, 25)))
+    panel = Image.new("RGBA", card.size, (0, 0, 0, 0))
+    ImageDraw.Draw(panel).rounded_rectangle(
+        (155, 20, 945, 480), radius=34, fill=(4, 6, 12, 135)
+    )
+    card.alpha_composite(panel)
 
     with Image.open(io.BytesIO(avatar_bytes)) as avatar_source:
         avatar = ImageOps.fit(
-            avatar_source.convert("RGBA"), (190, 190), Image.Resampling.LANCZOS
+            avatar_source.convert("RGBA"), (210, 210), Image.Resampling.LANCZOS
         )
     mask = Image.new("L", avatar.size, 0)
-    ImageDraw.Draw(mask).ellipse((0, 0, 189, 189), fill=255)
+    ImageDraw.Draw(mask).ellipse((0, 0, 209, 209), fill=255)
     avatar.putalpha(mask)
-    border = Image.new("RGBA", (206, 206), (0, 0, 0, 0))
-    ImageDraw.Draw(border).ellipse((0, 0, 205, 205), fill=(255, 255, 255, 245))
-    border.alpha_composite(avatar, (8, 8))
-    card.alpha_composite(border, ((width - 206) // 2, 54))
+    border = Image.new("RGBA", (228, 228), (0, 0, 0, 0))
+    ImageDraw.Draw(border).ellipse((0, 0, 227, 227), fill=(255, 255, 255, 245))
+    border.alpha_composite(avatar, (9, 9))
+    card.alpha_composite(border, ((width - 228) // 2, 42))
 
     draw = ImageDraw.Draw(card)
-    headline_font = _font(48, bold=True)
+    headline_font = _font(62, bold=True)
     while draw.textbbox((0, 0), headline, font=headline_font)[2] > width - 80 and headline_font.size > 24:
         headline_font = _font(headline_font.size - 2, bold=True)
-    subtext_font = _font(29)
+    subtext_font = _font(36)
     headline_box = draw.textbbox((0, 0), headline, font=headline_font, stroke_width=2)
     headline_x = (width - (headline_box[2] - headline_box[0])) // 2
     draw.text(
-        (headline_x, 295), headline, font=headline_font, fill="white",
+        (headline_x, 302), headline, font=headline_font, fill="white",
         stroke_width=2, stroke_fill=(0, 0, 0, 180),
     )
     subtext_box = draw.textbbox((0, 0), subtext, font=subtext_font, stroke_width=1)
     subtext_x = (width - (subtext_box[2] - subtext_box[0])) // 2
     draw.text(
-        (subtext_x, 370), subtext, font=subtext_font, fill=(220, 225, 235),
+        (subtext_x, 390), subtext, font=subtext_font, fill=(220, 225, 235),
         stroke_width=1, stroke_fill=(0, 0, 0, 170),
     )
     output = io.BytesIO()
@@ -398,6 +403,7 @@ class ClubManagement(commands.Cog):
     ) -> bool:
         replacements = {
             "{user}": member.name,
+            "{display}": member.display_name,
             "{server}": member.guild.name,
             "{count}": str(member.guild.member_count or 0),
         }
@@ -1013,7 +1019,7 @@ class ClubManagement(commands.Cog):
         interaction: discord.Interaction,
         channel: discord.TextChannel,
         banner: discord.Attachment,
-        headline: str = "{user} just joined {server}!",
+        headline: str = "{display} has landed.",
         subtext: str = "Member #{count} - Welcome to the community",
     ):
         if banner.content_type and not banner.content_type.startswith("image/"):
@@ -1038,7 +1044,7 @@ class ClubManagement(commands.Cog):
         )
         await interaction.followup.send(
             f"Welcome system configured for {channel.mention}.\n"
-            "Available text placeholders: `{user}`, `{server}`, `{count}`.",
+            "Available text placeholders: `{user}`, `{display}`, `{server}`, `{count}`.",
             ephemeral=True,
         )
 
