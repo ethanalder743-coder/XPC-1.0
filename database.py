@@ -108,6 +108,42 @@ class Database:
                     submitted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     PRIMARY KEY (guild_id, week, user_id)
                 );
+
+                CREATE TABLE IF NOT EXISTS budget_config (
+                    guild_id INTEGER PRIMARY KEY,
+                    channel_id INTEGER NOT NULL,
+                    message_id INTEGER
+                );
+
+                CREATE TABLE IF NOT EXISTS team_budgets (
+                    guild_id INTEGER NOT NULL,
+                    team_name TEXT NOT NULL COLLATE NOCASE,
+                    amount INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (guild_id, team_name)
+                );
+
+                CREATE TABLE IF NOT EXISTS transfers (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    guild_id INTEGER NOT NULL,
+                    player_id INTEGER NOT NULL,
+                    selling_team TEXT NOT NULL,
+                    buying_team TEXT NOT NULL,
+                    fee INTEGER NOT NULL,
+                    actioned_by INTEGER NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE TABLE IF NOT EXISTS loans (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    guild_id INTEGER NOT NULL,
+                    player_id INTEGER NOT NULL,
+                    parent_team TEXT NOT NULL,
+                    loan_team TEXT NOT NULL,
+                    actioned_by INTEGER NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'active',
+                    started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    ended_at TEXT
+                );
                 """
             )
 
@@ -469,3 +505,140 @@ class Database:
                     (guild_id, week),
                 )
             )
+
+    def configure_budget_channel(self, guild_id: int, channel_id: int) -> None:
+        with self.connect() as db:
+            db.execute(
+                """
+                INSERT INTO budget_config (guild_id, channel_id) VALUES (?, ?)
+                ON CONFLICT(guild_id) DO UPDATE SET channel_id = excluded.channel_id
+                """,
+                (guild_id, channel_id),
+            )
+
+    def budget_config(self, guild_id: int) -> sqlite3.Row | None:
+        with self.connect() as db:
+            return db.execute(
+                "SELECT * FROM budget_config WHERE guild_id = ?", (guild_id,)
+            ).fetchone()
+
+    def set_budget_message(self, guild_id: int, message_id: int) -> None:
+        with self.connect() as db:
+            db.execute(
+                "UPDATE budget_config SET message_id = ? WHERE guild_id = ?",
+                (message_id, guild_id),
+            )
+
+    def set_team_budget(self, guild_id: int, team_name: str, amount: int) -> None:
+        with self.connect() as db:
+            db.execute(
+                """
+                INSERT INTO team_budgets (guild_id, team_name, amount) VALUES (?, ?, ?)
+                ON CONFLICT(guild_id, team_name) DO UPDATE SET amount = excluded.amount
+                """,
+                (guild_id, team_name, amount),
+            )
+
+    def team_budget(self, guild_id: int, team_name: str) -> int:
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT amount FROM team_budgets WHERE guild_id = ? AND team_name = ?",
+                (guild_id, team_name),
+            ).fetchone()
+        return int(row["amount"]) if row else 0
+
+    def complete_transfer(
+        self, guild_id: int, player_id: int, selling_team: str,
+        buying_team: str, fee: int, actioned_by: int,
+    ) -> None:
+        with self.connect() as db:
+            buyer = db.execute(
+                "SELECT amount FROM team_budgets WHERE guild_id = ? AND team_name = ?",
+                (guild_id, buying_team),
+            ).fetchone()
+            buyer_amount = int(buyer["amount"]) if buyer else 0
+            if buyer_amount < fee:
+                raise ValueError("The buying team does not have enough budget.")
+            seller = db.execute(
+                "SELECT amount FROM team_budgets WHERE guild_id = ? AND team_name = ?",
+                (guild_id, selling_team),
+            ).fetchone()
+            seller_amount = int(seller["amount"]) if seller else 0
+            self._upsert_budget(db, guild_id, buying_team, buyer_amount - fee)
+            self._upsert_budget(db, guild_id, selling_team, seller_amount + fee)
+            db.execute(
+                "DELETE FROM team_members WHERE guild_id = ? AND team_name = ? AND player_id = ?",
+                (guild_id, selling_team, player_id),
+            )
+            db.execute(
+                "INSERT OR REPLACE INTO team_members (guild_id, team_name, player_id) VALUES (?, ?, ?)",
+                (guild_id, buying_team, player_id),
+            )
+            db.execute(
+                "INSERT INTO transfers (guild_id, player_id, selling_team, buying_team, fee, actioned_by) VALUES (?, ?, ?, ?, ?, ?)",
+                (guild_id, player_id, selling_team, buying_team, fee, actioned_by),
+            )
+
+    @staticmethod
+    def _upsert_budget(db, guild_id: int, team_name: str, amount: int) -> None:
+        db.execute(
+            """
+            INSERT INTO team_budgets (guild_id, team_name, amount) VALUES (?, ?, ?)
+            ON CONFLICT(guild_id, team_name) DO UPDATE SET amount = excluded.amount
+            """,
+            (guild_id, team_name, amount),
+        )
+
+    def start_loan(
+        self, guild_id: int, player_id: int, parent_team: str,
+        loan_team: str, actioned_by: int,
+    ) -> None:
+        with self.connect() as db:
+            active = db.execute(
+                "SELECT id FROM loans WHERE guild_id = ? AND player_id = ? AND status = 'active'",
+                (guild_id, player_id),
+            ).fetchone()
+            if active:
+                raise ValueError("That player already has an active loan.")
+            db.execute(
+                "DELETE FROM team_members WHERE guild_id = ? AND team_name = ? AND player_id = ?",
+                (guild_id, parent_team, player_id),
+            )
+            db.execute(
+                "INSERT OR REPLACE INTO team_members (guild_id, team_name, player_id) VALUES (?, ?, ?)",
+                (guild_id, loan_team, player_id),
+            )
+            db.execute(
+                "INSERT INTO loans (guild_id, player_id, parent_team, loan_team, actioned_by) VALUES (?, ?, ?, ?, ?)",
+                (guild_id, player_id, parent_team, loan_team, actioned_by),
+            )
+
+    def active_loan(self, guild_id: int, player_id: int) -> sqlite3.Row | None:
+        with self.connect() as db:
+            return db.execute(
+                "SELECT * FROM loans WHERE guild_id = ? AND player_id = ? AND status = 'active' ORDER BY id DESC LIMIT 1",
+                (guild_id, player_id),
+            ).fetchone()
+
+    def finish_loan(self, guild_id: int, player_id: int) -> sqlite3.Row | None:
+        with self.connect() as db:
+            loan = db.execute(
+                "SELECT * FROM loans WHERE guild_id = ? AND player_id = ? AND status = 'active' ORDER BY id DESC LIMIT 1",
+                (guild_id, player_id),
+            ).fetchone()
+            if not loan:
+                return None
+            db.execute(
+                "UPDATE loans SET status = 'ended', ended_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (loan["id"],),
+            )
+            db.execute(
+                "DELETE FROM team_members WHERE guild_id = ? AND team_name = ? AND player_id = ?",
+                (guild_id, loan["loan_team"], player_id),
+            )
+            db.execute(
+                "INSERT OR REPLACE INTO team_members (guild_id, team_name, player_id) VALUES (?, ?, ?)",
+                (guild_id, loan["parent_team"], player_id),
+            )
+            return loan
+
