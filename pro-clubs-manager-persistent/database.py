@@ -168,6 +168,33 @@ class Database:
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     closed_at TEXT
                 );
+
+                CREATE TABLE IF NOT EXISTS league_config (
+                    guild_id INTEGER PRIMARY KEY,
+                    franchise_role_id INTEGER,
+                    transfer_window_open INTEGER NOT NULL DEFAULT 1,
+                    log_style TEXT NOT NULL DEFAULT 'detailed'
+                );
+
+                CREATE TABLE IF NOT EXISTS blacklist (
+                    guild_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    reason TEXT NOT NULL,
+                    added_by INTEGER NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (guild_id, user_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS match_results (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    guild_id INTEGER NOT NULL,
+                    home_team TEXT NOT NULL,
+                    away_team TEXT NOT NULL,
+                    home_score INTEGER NOT NULL,
+                    away_score INTEGER NOT NULL,
+                    submitted_by INTEGER NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
                 """
             )
 
@@ -727,6 +754,139 @@ class Database:
                 (channel_id,),
             )
             return cursor.rowcount > 0
+
+    def configure_franchise_role(self, guild_id: int, role_id: int) -> None:
+        with self.connect() as db:
+            db.execute(
+                """
+                INSERT INTO league_config (guild_id, franchise_role_id) VALUES (?, ?)
+                ON CONFLICT(guild_id) DO UPDATE SET franchise_role_id = excluded.franchise_role_id
+                """,
+                (guild_id, role_id),
+            )
+
+    def league_config(self, guild_id: int) -> sqlite3.Row | None:
+        with self.connect() as db:
+            return db.execute("SELECT * FROM league_config WHERE guild_id = ?", (guild_id,)).fetchone()
+
+    def set_transfer_window(self, guild_id: int, is_open: bool) -> None:
+        with self.connect() as db:
+            db.execute(
+                """
+                INSERT INTO league_config (guild_id, transfer_window_open) VALUES (?, ?)
+                ON CONFLICT(guild_id) DO UPDATE SET transfer_window_open = excluded.transfer_window_open
+                """,
+                (guild_id, int(is_open)),
+            )
+
+    def transfer_window_open(self, guild_id: int) -> bool:
+        row = self.league_config(guild_id)
+        return bool(row["transfer_window_open"]) if row else True
+
+    def set_log_style(self, guild_id: int, style: str) -> None:
+        with self.connect() as db:
+            db.execute(
+                """
+                INSERT INTO league_config (guild_id, log_style) VALUES (?, ?)
+                ON CONFLICT(guild_id) DO UPDATE SET log_style = excluded.log_style
+                """,
+                (guild_id, style),
+            )
+
+    def blacklist_user(self, guild_id: int, user_id: int, reason: str, added_by: int) -> None:
+        with self.connect() as db:
+            db.execute(
+                "INSERT OR REPLACE INTO blacklist (guild_id, user_id, reason, added_by) VALUES (?, ?, ?, ?)",
+                (guild_id, user_id, reason, added_by),
+            )
+
+    def remove_blacklist(self, guild_id: int, user_id: int) -> bool:
+        with self.connect() as db:
+            return db.execute(
+                "DELETE FROM blacklist WHERE guild_id = ? AND user_id = ?", (guild_id, user_id)
+            ).rowcount > 0
+
+    def blacklist_entry(self, guild_id: int, user_id: int) -> sqlite3.Row | None:
+        with self.connect() as db:
+            return db.execute(
+                "SELECT * FROM blacklist WHERE guild_id = ? AND user_id = ?", (guild_id, user_id)
+            ).fetchone()
+
+    def blacklist_entries(self, guild_id: int) -> list[sqlite3.Row]:
+        with self.connect() as db:
+            return list(db.execute("SELECT * FROM blacklist WHERE guild_id = ? ORDER BY created_at", (guild_id,)))
+
+    def cancel_offer(self, offer_id: int, guild_id: int) -> bool:
+        with self.connect() as db:
+            return db.execute(
+                "UPDATE offers SET status = 'cancelled', decided_at = CURRENT_TIMESTAMP WHERE id = ? AND guild_id = ? AND status = 'pending'",
+                (offer_id, guild_id),
+            ).rowcount > 0
+
+    def pending_offers_for_player(self, guild_id: int, player_id: int) -> list[sqlite3.Row]:
+        with self.connect() as db:
+            return list(db.execute(
+                "SELECT * FROM offers WHERE guild_id = ? AND player_id = ? AND status = 'pending' ORDER BY created_at DESC",
+                (guild_id, player_id),
+            ))
+
+    def pending_offers_for_team(self, guild_id: int, team_name: str) -> list[sqlite3.Row]:
+        with self.connect() as db:
+            return list(db.execute(
+                "SELECT * FROM offers WHERE guild_id = ? AND team_name = ? AND status = 'pending' ORDER BY created_at DESC",
+                (guild_id, team_name),
+            ))
+
+    def update_team(
+        self, guild_id: int, old_name: str, new_name: str,
+        role_id: int, owner_id: int, roster_cap: int,
+    ) -> None:
+        with self.connect() as db:
+            db.execute(
+                "UPDATE teams SET name = ?, role_id = ?, owner_id = ?, roster_cap = ? WHERE guild_id = ? AND name = ?",
+                (new_name, role_id, owner_id, roster_cap, guild_id, old_name),
+            )
+            for table, column in (("team_members", "team_name"), ("team_budgets", "team_name")):
+                db.execute(f"UPDATE {table} SET {column} = ? WHERE guild_id = ? AND {column} = ?", (new_name, guild_id, old_name))
+            for table, columns in (
+                ("offers", ("team_name",)),
+                ("transfers", ("selling_team", "buying_team")),
+                ("loans", ("parent_team", "loan_team")),
+                ("match_results", ("home_team", "away_team")),
+                ("totw_submissions", ("team_name",)),
+            ):
+                for column in columns:
+                    db.execute(
+                        f"UPDATE {table} SET {column} = ? WHERE guild_id = ? AND {column} = ?",
+                        (new_name, guild_id, old_name),
+                    )
+
+    def set_team_owner(self, guild_id: int, team_name: str, owner_id: int) -> None:
+        with self.connect() as db:
+            db.execute("UPDATE teams SET owner_id = ? WHERE guild_id = ? AND name = ?", (owner_id, guild_id, team_name))
+
+    def add_result(
+        self, guild_id: int, home_team: str, away_team: str,
+        home_score: int, away_score: int, submitted_by: int,
+    ) -> None:
+        with self.connect() as db:
+            db.execute(
+                "INSERT INTO match_results (guild_id, home_team, away_team, home_score, away_score, submitted_by) VALUES (?, ?, ?, ?, ?, ?)",
+                (guild_id, home_team, away_team, home_score, away_score, submitted_by),
+            )
+
+    def results(self, guild_id: int) -> list[sqlite3.Row]:
+        with self.connect() as db:
+            return list(db.execute("SELECT * FROM match_results WHERE guild_id = ? ORDER BY created_at", (guild_id,)))
+
+    def end_season(self, guild_id: int) -> None:
+        with self.connect() as db:
+            for table in ("match_results", "offers", "transfers", "loans", "team_members", "totw_submissions"):
+                db.execute(f"DELETE FROM {table} WHERE guild_id = ?", (guild_id,))
+            config = db.execute("SELECT starting_budget FROM budget_config WHERE guild_id = ?", (guild_id,)).fetchone()
+            starting = int(config["starting_budget"]) if config else 0
+            for team in db.execute("SELECT name FROM teams WHERE guild_id = ?", (guild_id,)):
+                self._upsert_budget(db, guild_id, team["name"], starting)
 
     def finish_loan(self, guild_id: int, player_id: int) -> sqlite3.Row | None:
         with self.connect() as db:
