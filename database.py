@@ -195,6 +195,23 @@ class Database:
                     submitted_by INTEGER NOT NULL,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );
+
+                CREATE TABLE IF NOT EXISTS command_status (
+                    guild_id INTEGER NOT NULL,
+                    command_name TEXT NOT NULL,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (guild_id, command_name)
+                );
+
+                CREATE TABLE IF NOT EXISTS audit_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    guild_id INTEGER,
+                    user_id INTEGER,
+                    action TEXT NOT NULL,
+                    details TEXT,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
                 """
             )
 
@@ -887,6 +904,53 @@ class Database:
             starting = int(config["starting_budget"]) if config else 0
             for team in db.execute("SELECT name FROM teams WHERE guild_id = ?", (guild_id,)):
                 self._upsert_budget(db, guild_id, team["name"], starting)
+
+    def command_enabled(self, guild_id: int, command_name: str) -> bool:
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT enabled FROM command_status WHERE guild_id = ? AND command_name = ?",
+                (guild_id, command_name),
+            ).fetchone()
+        return bool(row["enabled"]) if row else True
+
+    def set_command_enabled(self, guild_id: int, command_name: str, enabled: bool) -> None:
+        with self.connect() as db:
+            db.execute(
+                """
+                INSERT INTO command_status (guild_id, command_name, enabled) VALUES (?, ?, ?)
+                ON CONFLICT(guild_id, command_name) DO UPDATE SET
+                    enabled = excluded.enabled,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (guild_id, command_name, int(enabled)),
+            )
+
+    def command_statuses(self, guild_id: int) -> dict[str, bool]:
+        with self.connect() as db:
+            return {
+                row["command_name"]: bool(row["enabled"])
+                for row in db.execute(
+                    "SELECT command_name, enabled FROM command_status WHERE guild_id = ?",
+                    (guild_id,),
+                )
+            }
+
+    def add_audit(
+        self, guild_id: int | None, user_id: int | None,
+        action: str, details: str = "",
+    ) -> None:
+        with self.connect() as db:
+            db.execute(
+                "INSERT INTO audit_log (guild_id, user_id, action, details) VALUES (?, ?, ?, ?)",
+                (guild_id, user_id, action[:100], details[:1000]),
+            )
+
+    def audit_entries(self, guild_id: int, limit: int = 250) -> list[sqlite3.Row]:
+        with self.connect() as db:
+            return list(db.execute(
+                "SELECT * FROM audit_log WHERE guild_id = ? ORDER BY id DESC LIMIT ?",
+                (guild_id, limit),
+            ))
 
     def finish_loan(self, guild_id: int, player_id: int) -> sqlite3.Row | None:
         with self.connect() as db:
