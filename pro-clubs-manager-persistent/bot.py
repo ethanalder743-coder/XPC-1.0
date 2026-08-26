@@ -19,9 +19,19 @@ class ProClubsBot(commands.Bot):
         intents.members = True
         super().__init__(command_prefix="!", intents=intents)
         database_path = os.getenv("DATABASE_PATH", "").strip()
-        if not database_path:
-            # Railway deployments use /data when a persistent volume is mounted there.
-            database_path = "/data/pro_clubs.db" if os.getenv("RAILWAY_ENVIRONMENT") else "pro_clubs.db"
+        on_railway = bool(
+            os.getenv("RAILWAY_PROJECT_ID")
+            or os.getenv("RAILWAY_ENVIRONMENT_ID")
+            or os.getenv("RAILWAY_ENVIRONMENT")
+        )
+        if on_railway and not database_path.startswith("/data/"):
+            logging.warning(
+                "Railway database path %r is not persistent; forcing /data/pro_clubs.db",
+                database_path or "(unset)",
+            )
+            database_path = "/data/pro_clubs.db"
+        elif not database_path:
+            database_path = "pro_clubs.db"
         self.database = Database(database_path)
         logging.info("Using database at %s", database_path)
         self.sync_task: asyncio.Task | None = None
@@ -59,4 +69,3 @@ if not token:
     raise RuntimeError("DISCORD_TOKEN is missing. Copy .env.example to .env and add your token.")
 
 ProClubsBot().run(token)
-
