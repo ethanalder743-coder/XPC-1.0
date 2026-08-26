@@ -144,7 +144,7 @@ class OfferView(discord.ui.View):
             embed = discord.Embed(
                 description=(
                     "## PLAYER SIGNED\n"
-                    f"### {member.mention} - {member.display_name}\n"
+                    f"### {member.mention} / {member.display_name}\n"
                     f"has signed with {role.mention}\n\n"
                     "━━━━━━━━━━━━━━━━━━━━\n"
                     f"- **TEAM** — {role.mention}\n"
@@ -337,7 +337,7 @@ class ClubManagement(commands.Cog):
             embed = discord.Embed(
                 description=(
                     "## PLAYER RELEASED\n"
-                    f"### {player.mention} - {player.display_name}\n"
+                    f"### {player.mention} / {player.display_name}\n"
                     f"was released by {role.mention}\n\n"
                     "━━━━━━━━━━━━━━━━━━━━\n"
                     f"- **TEAM** — {role.mention}\n"
@@ -522,3 +522,4 @@ class ClubManagement(commands.Cog):
 
 async def setup(bot: commands.Bot, database: Database) -> None:
     await bot.add_cog(ClubManagement(bot, database))
+
