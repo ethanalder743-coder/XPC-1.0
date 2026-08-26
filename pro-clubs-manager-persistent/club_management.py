@@ -140,35 +140,27 @@ class OfferView(discord.ui.View):
             roster = get_player_roster(self.db, guild, role, offer["team_name"])
             team = self.db.team(offer["guild_id"], offer["team_name"])
             roster_cap = team["roster_cap"] if team else 22
+            owner_text = f"<@{team['owner_id']}>" if team and team["owner_id"] else "Not configured"
             embed = discord.Embed(
-                title="🟢  SIGNING CONFIRMED",
+                title="Offer Accepted",
                 description=(
-                    f"### Welcome, {member.display_name}\n"
-                    f"{member.mention} has officially joined {role.mention}."
+                    f"{member.mention} **{member.display_name}** has signed with ⚽ {role.mention}\n\n"
+                    f"• ⚽ **Franchise Owner** - {owner_text}\n\n"
+                    f"• 🤝 **Signed By** - <@{offer['offered_by']}>\n\n"
+                    f"• 📋 **Roster Cap** - {len(roster)}/{roster_cap}"
                 ),
                 color=role.color if role.color.value else discord.Color.blurple(),
                 timestamp=discord.utils.utcnow(),
             )
-            if team and team["owner_id"]:
-                embed.add_field(
-                    name="CLUB OWNER",
-                    value=f"<@{team['owner_id']}>",
-                    inline=True,
-                )
-            embed.add_field(
-                name="SIGNED BY",
-                value=f"<@{offer['offered_by']}>",
-                inline=True,
-            )
-            embed.add_field(
-                name="SQUAD STATUS",
-                value=f"**{len(roster)} / {roster_cap}** players",
-                inline=True,
-            )
             if team and team["logo_url"]:
                 embed.set_thumbnail(url=team["logo_url"])
-            embed.set_author(name="XPC  •  TRANSFER CENTRE")
-            embed.set_footer(text=f"{offer['team_name']}  •  Offer #{self.offer_id}")
+                embed.set_author(
+                    name=f"XPC | {offer['team_name'].upper()} | FC26",
+                    icon_url=team["logo_url"],
+                )
+            else:
+                embed.set_author(name=f"XPC | {offer['team_name'].upper()} | FC26")
+            embed.set_footer(text=f"XPC BOT • Offer #{self.offer_id}")
             await channel.send(embed=embed)
 
 
