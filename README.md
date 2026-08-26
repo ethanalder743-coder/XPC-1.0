@@ -13,7 +13,7 @@ This project is inspired only by common club-management workflows. It does not c
 - Rosters include only players who accepted an offer through the bot. Manually assigned team roles, owners, managers, and bots are not counted. `/release` removes the player from the saved roster.
 - `/release player reason` removes the manager's automatically detected team role and writes a release log.
 - `/team add`, `/team remove`, and `/team list` manage selectable teams.
-- `/addteam` creates a team with a name, tagged role, tagged owner, and optional uploaded logo.
+- `/addteam` creates a team with a name, tagged role, tagged owner, optional uploaded logo, and roster cap (default 22).
 - `/removeteam` removes a configured team without deleting its Discord role.
 - `/config_setup` configures signing/release channels and exactly two management roles.
 - Team names autocomplete from the server's saved configuration.
