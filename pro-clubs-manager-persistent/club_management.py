@@ -47,9 +47,7 @@ def _font(size: int, bold: bool = False):
     return ImageFont.load_default()
 
 
-def render_welcome_card(
-    banner_path: str, avatar_bytes: bytes, headline: str, subtext: str
-) -> io.BytesIO:
+def render_welcome_card(banner_path: str, avatar_bytes: bytes, headline: str) -> io.BytesIO:
     width, height = 1100, 500
     with Image.open(banner_path) as source:
         background = ImageOps.fit(source.convert("RGB"), (width, height), Image.Resampling.LANCZOS)
@@ -57,7 +55,7 @@ def render_welcome_card(
     card.alpha_composite(Image.new("RGBA", card.size, (8, 10, 18, 25)))
     panel = Image.new("RGBA", card.size, (0, 0, 0, 0))
     ImageDraw.Draw(panel).rounded_rectangle(
-        (155, 20, 945, 480), radius=34, fill=(4, 6, 12, 135)
+        (90, 20, 1010, 480), radius=34, fill=(4, 6, 12, 135)
     )
     card.alpha_composite(panel)
 
@@ -74,21 +72,14 @@ def render_welcome_card(
     card.alpha_composite(border, ((width - 228) // 2, 42))
 
     draw = ImageDraw.Draw(card)
-    headline_font = _font(62, bold=True)
-    while draw.textbbox((0, 0), headline, font=headline_font)[2] > width - 80 and headline_font.size > 24:
+    headline_font = _font(86, bold=True)
+    while draw.textbbox((0, 0), headline, font=headline_font)[2] > width - 130 and headline_font.size > 32:
         headline_font = _font(headline_font.size - 2, bold=True)
-    subtext_font = _font(36)
     headline_box = draw.textbbox((0, 0), headline, font=headline_font, stroke_width=2)
     headline_x = (width - (headline_box[2] - headline_box[0])) // 2
     draw.text(
-        (headline_x, 302), headline, font=headline_font, fill="white",
-        stroke_width=2, stroke_fill=(0, 0, 0, 180),
-    )
-    subtext_box = draw.textbbox((0, 0), subtext, font=subtext_font, stroke_width=1)
-    subtext_x = (width - (subtext_box[2] - subtext_box[0])) // 2
-    draw.text(
-        (subtext_x, 390), subtext, font=subtext_font, fill=(220, 225, 235),
-        stroke_width=1, stroke_fill=(0, 0, 0, 170),
+        (headline_x, 325), headline, font=headline_font, fill="white",
+        stroke_width=3, stroke_fill=(0, 0, 0, 190),
     )
     output = io.BytesIO()
     card.convert("RGB").save(output, format="PNG", optimize=True)
@@ -403,16 +394,7 @@ class ClubManagement(commands.Cog):
     async def send_welcome_card(
         self, member: discord.Member, channel: discord.TextChannel, config
     ) -> bool:
-        replacements = {
-            "{user}": member.name,
-            "{display}": member.display_name,
-            "{server}": member.guild.name,
-            "{count}": str(member.guild.member_count or 0),
-        }
         headline = f"{member.display_name} has landed."
-        subtext = config["subtext"]
-        for placeholder, value in replacements.items():
-            subtext = subtext.replace(placeholder, value)
         try:
             avatar_bytes = await member.display_avatar.with_size(256).read()
             card = await asyncio.to_thread(
@@ -420,7 +402,6 @@ class ClubManagement(commands.Cog):
                 config["banner_path"],
                 avatar_bytes,
                 headline,
-                subtext,
             )
             await channel.send(
                 file=discord.File(card, filename="welcome.png"),
@@ -1155,14 +1136,12 @@ class ClubManagement(commands.Cog):
     @app_commands.describe(
         channel="Channel where welcome cards are posted",
         banner="Your wide welcome background image",
-        subtext="Smaller text; supports {user}, {display}, {server}, and {count}",
     )
     async def welcomesetup(
         self,
         interaction: discord.Interaction,
         channel: discord.TextChannel,
         banner: discord.Attachment,
-        subtext: str = "Member #{count} - Welcome to the community",
     ):
         if banner.content_type and not banner.content_type.startswith("image/"):
             await interaction.response.send_message("The banner must be an image file.", ephemeral=True)
@@ -1182,11 +1161,10 @@ class ClubManagement(commands.Cog):
             channel.id,
             str(banner_path),
             "{display} has landed.",
-            subtext[:250],
+            "",
         )
         await interaction.followup.send(
-            f"Welcome system configured for {channel.mention}.\n"
-            "Available text placeholders: `{user}`, `{display}`, `{server}`, `{count}`.",
+            f"Welcome system configured for {channel.mention}.",
             ephemeral=True,
         )
 
@@ -1272,3 +1250,4 @@ async def setup(bot: commands.Bot, database: Database) -> None:
     await bot.add_cog(ClubManagement(bot, database))
     bot.add_view(TicketPanelView(bot, database, ["General Support"]))
     bot.add_view(TicketCloseView(database))
+
