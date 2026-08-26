@@ -139,20 +139,27 @@ class OfferView(discord.ui.View):
         if isinstance(channel, discord.TextChannel):
             roster = get_player_roster(self.db, guild, role, offer["team_name"])
             embed = discord.Embed(
-                title=f"New Signing — {offer['team_name']}",
-                description=f"{member.mention} has signed for {role.mention}!",
+                title="✍️  TRANSFER CONFIRMED",
+                description=(
+                    f"## Welcome to {offer['team_name']}\n"
+                    f"{member.mention} has officially joined {role.mention}."
+                ),
                 color=role.color if role.color.value else discord.Color.blurple(),
             )
-            embed.add_field(name="Player", value=member.mention, inline=True)
-            embed.add_field(name="Team", value=role.mention, inline=True)
-            embed.add_field(name="Signed by", value=f"<@{offer['offered_by']}>", inline=True)
+            embed.add_field(name="👤  PLAYER", value=member.mention, inline=True)
+            embed.add_field(name="🛡️  CLUB", value=role.mention, inline=True)
             team = self.db.team(offer["guild_id"], offer["team_name"])
+            embed.add_field(name="🤝  SIGNED BY", value=f"<@{offer['offered_by']}>", inline=True)
             if team and team["owner_id"]:
-                embed.add_field(name="Team owner", value=f"<@{team['owner_id']}>", inline=True)
-            embed.add_field(name=f"Player roster ({len(roster)})", value=roster_text(roster), inline=False)
+                embed.add_field(name="👑  CLUB OWNER", value=f"<@{team['owner_id']}>", inline=True)
+            embed.add_field(
+                name=f"📋  SQUAD • {len(roster)} PLAYER{'S' if len(roster) != 1 else ''}",
+                value=roster_text(roster),
+                inline=False,
+            )
             if team and team["logo_url"]:
                 embed.set_thumbnail(url=team["logo_url"])
-            embed.set_footer(text=f"Offer #{self.offer_id} • Team colour taken from the Discord role")
+            embed.set_footer(text=f"XPC Transfers  •  Offer #{self.offer_id}")
             await channel.send(embed=embed)
 
 
@@ -282,14 +289,20 @@ class ClubManagement(commands.Cog):
             f"Offer sent privately to {player.mention} for {role.mention}.", ephemeral=True
         )
 
-    @app_commands.command(name="release", description="Remove a configured team role from a player")
+    @app_commands.command(name="release", description="Release a player from your team")
     @app_commands.guild_only()
-    @app_commands.autocomplete(team=team_autocomplete)
-    async def release(self, interaction: discord.Interaction, player: discord.Member, team: str, reason: str = "No reason provided"):
+    async def release(
+        self,
+        interaction: discord.Interaction,
+        player: discord.Member,
+        reason: str = "No reason provided",
+    ):
         if not await self.require_manager(interaction):
             return
         assert interaction.guild
-        record = self.db.team(interaction.guild.id, team)
+        record = await self.manager_team(interaction)
+        if not record:
+            return
         role = interaction.guild.get_role(record["role_id"]) if record else None
         if record is None or role is None:
             await interaction.response.send_message("That team is not configured correctly.", ephemeral=True)
