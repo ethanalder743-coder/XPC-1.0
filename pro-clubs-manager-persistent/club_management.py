@@ -407,10 +407,9 @@ class ClubManagement(commands.Cog):
             "{server}": member.guild.name,
             "{count}": str(member.guild.member_count or 0),
         }
-        headline = config["headline"]
+        headline = f"{member.display_name} has landed."
         subtext = config["subtext"]
         for placeholder, value in replacements.items():
-            headline = headline.replace(placeholder, value)
             subtext = subtext.replace(placeholder, value)
         try:
             avatar_bytes = await member.display_avatar.with_size(256).read()
@@ -1011,15 +1010,13 @@ class ClubManagement(commands.Cog):
     @app_commands.describe(
         channel="Channel where welcome cards are posted",
         banner="Your wide welcome background image",
-        headline="Large text; supports {user}, {server}, and {count}",
-        subtext="Smaller text; supports {user}, {server}, and {count}",
+        subtext="Smaller text; supports {user}, {display}, {server}, and {count}",
     )
     async def welcomesetup(
         self,
         interaction: discord.Interaction,
         channel: discord.TextChannel,
         banner: discord.Attachment,
-        headline: str = "{display} has landed.",
         subtext: str = "Member #{count} - Welcome to the community",
     ):
         if banner.content_type and not banner.content_type.startswith("image/"):
@@ -1039,7 +1036,7 @@ class ClubManagement(commands.Cog):
             interaction.guild_id,
             channel.id,
             str(banner_path),
-            headline[:250],
+            "{display} has landed.",
             subtext[:250],
         )
         await interaction.followup.send(
