@@ -34,11 +34,19 @@ This project is inspired only by common club-management workflows. It does not c
 ### Transfers, loans, and budgets
 
 - `/budgetsetup` sets the channel containing the live plain-text budget list.
+- `/budgetsetup` also sets the starting budget for every configured team.
 - `/setbudget` sets a configured team's budget in millions.
 - `/budgets` manually refreshes the budget message.
 - `/transfer` moves a player between teams, moves the fee between budgets, and refreshes the list.
 - `/loan` temporarily moves a player to another team.
 - `/endloan` returns a loaned player to their parent team.
+- `/loans` lists every active loan.
+
+### Polls and staff applications
+
+- `/pollconfig` sets the role pinged whenever staff creates a poll.
+- `/poll` creates a native Discord poll with custom choices.
+- `/staffapplicationsetup` posts a position selector that opens private application channels.
 
 Transfer and loan commands are restricted to administrators and the roles configured with `/forceconfig`.
 
