@@ -18,6 +18,7 @@ This project is inspired only by common club-management workflows. It does not c
 - `/roster` lets configured managers and co-managers privately view their automatically detected team's signed roster.
 - `/setteamlogo` updates an existing team's logo and creates a custom server emoji for an inline logo. The bot needs Manage Expressions permission.
 - `/rulesembed` lets an administrator post server rules and an optional contacting-moderators card with uploaded banner images in a selected channel.
+- `/ticketsetup` lets an administrator choose the panel channel, private ticket category, support role to ping, and comma-separated problem types. Users choose a problem from the persistent dropdown, receive a private channel, and can close it with a button.
 - `/config_setup` configures signing/release channels and exactly two management roles.
 - Team names autocomplete from the server's saved configuration.
 - SQLite stores teams, configuration, and offers.
