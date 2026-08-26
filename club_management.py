@@ -1,3 +1,4 @@
+import io
 import re
 import sqlite3
 
@@ -570,6 +571,62 @@ class ClubManagement(commands.Cog):
             f"Release logs: {release_channel.mention}\n"
             f"Management roles: {manager_role_1.mention} and {manager_role_2.mention}",
             ephemeral=True,
+        )
+
+    @app_commands.command(name="rulesembed", description="Post rules cards in a selected channel")
+    @app_commands.guild_only()
+    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.describe(
+        channel="Channel where the rules should be posted",
+        rules_banner="Wide image displayed with the server rules",
+        rules_text="Rules and welcome text",
+        contact_banner="Optional wide image for the moderator section",
+        contact_text="Optional instructions for contacting moderators",
+    )
+    async def rulesembed(
+        self,
+        interaction: discord.Interaction,
+        channel: discord.TextChannel,
+        rules_banner: discord.Attachment,
+        rules_text: app_commands.Range[str, 1, 4000],
+        contact_banner: discord.Attachment | None = None,
+        contact_text: app_commands.Range[str, 1, 4000] | None = None,
+    ):
+        attachments = [rules_banner] + ([contact_banner] if contact_banner else [])
+        if any(item.content_type and not item.content_type.startswith("image/") for item in attachments):
+            await interaction.response.send_message("Banner files must be images.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        rules_file = discord.File(
+            io.BytesIO(await rules_banner.read()), filename="server-rules-banner.png"
+        )
+        rules_embed = discord.Embed(
+            description=rules_text,
+            color=discord.Color.blurple(),
+        )
+        rules_embed.set_author(name=interaction.guild.name)
+        rules_embed.set_image(url="attachment://server-rules-banner.png")
+        rules_embed.set_footer(text="Made By EthanCoys")
+        await channel.send(embed=rules_embed, file=rules_file)
+
+        if contact_banner or contact_text:
+            contact_embed = discord.Embed(
+                description=contact_text or "Contact the moderation team if you need help.",
+                color=discord.Color.magenta(),
+            )
+            contact_embed.set_author(name="CONTACTING MODERATORS")
+            contact_embed.set_footer(text="Made By EthanCoys")
+            if contact_banner:
+                contact_file = discord.File(
+                    io.BytesIO(await contact_banner.read()), filename="contact-moderators-banner.png"
+                )
+                contact_embed.set_image(url="attachment://contact-moderators-banner.png")
+                await channel.send(embed=contact_embed, file=contact_file)
+            else:
+                await channel.send(embed=contact_embed)
+
+        await interaction.followup.send(
+            f"Rules cards posted in {channel.mention}.", ephemeral=True
         )
 
 
