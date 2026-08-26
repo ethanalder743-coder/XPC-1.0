@@ -90,7 +90,7 @@ class OfferView(discord.ui.View):
             return
         self.db.add_team_member(guild.id, offer["team_name"], member.id)
         await self.finish(interaction, "accepted")
-        await interaction.followup.send("Offer accepted — welcome to the club!", ephemeral=True)
+        await interaction.followup.send("Offer accepted.", ephemeral=True)
         await self.log_signing(guild, member, role, offer)
 
     async def deny(self, interaction: discord.Interaction) -> None:
@@ -112,7 +112,7 @@ class OfferView(discord.ui.View):
         embed = discord.Embed(
             title="OFFER ACCEPTED" if accepted else "OFFER DECLINED",
             description=(
-                f"Welcome to **{offer['team_name']}**! Your team role has been added successfully."
+                f"Your offer from **{offer['team_name']}** was accepted. Your team role has been added."
                 if accepted else f"You declined the offer from **{offer['team_name']}**."
             ),
             color=(role.color if role and role.color.value else
@@ -321,7 +321,6 @@ class ClubManagement(commands.Cog):
         self,
         interaction: discord.Interaction,
         player: discord.Member,
-        reason: str = "No reason provided",
     ):
         if not await self.require_manager(interaction):
             return
@@ -337,7 +336,7 @@ class ClubManagement(commands.Cog):
             await interaction.response.send_message(f"{player.mention} does not have that team role.", ephemeral=True)
             return
         try:
-            await player.remove_roles(role, reason=f"Released by {interaction.user}: {reason}")
+            await player.remove_roles(role, reason=f"Released by {interaction.user}")
         except discord.Forbidden:
             await interaction.response.send_message("I cannot remove that role. Check my role position.", ephemeral=True)
             return
@@ -349,10 +348,6 @@ class ClubManagement(commands.Cog):
             roster = get_player_roster(self.db, interaction.guild, role, record["name"])
             roster_cap = record["roster_cap"] if record else 22
             owner_text = f"<@{record['owner_id']}>" if record["owner_id"] else "Not configured"
-            reason_text = (
-                f"\n\n**RELEASE NOTE**\n> {reason}"
-                if reason != "No reason provided" else ""
-            )
             embed = discord.Embed(
                 description=(
                     "## PLAYER RELEASED\n"
@@ -362,7 +357,6 @@ class ClubManagement(commands.Cog):
                     f"- **TEAM** — {inline_team_logo(record)}{role.mention}\n"
                     f"- **TEAM OWNER** — {owner_text}\n"
                     f"- **ROSTER** — `{len(roster):02d} / {roster_cap:02d}`"
-                    f"{reason_text}"
                 ),
                 color=discord.Color.red(),
                 timestamp=discord.utils.utcnow(),
