@@ -350,6 +350,20 @@ class ClubManagement(commands.Cog):
         )
         return False
 
+    async def require_force_access(self, interaction: discord.Interaction) -> bool:
+        if not isinstance(interaction.user, discord.Member):
+            return False
+        if interaction.user.guild_permissions.administrator:
+            return True
+        allowed = self.db.force_role_ids(interaction.guild_id)
+        if any(role.id in allowed for role in interaction.user.roles):
+            return True
+        await interaction.response.send_message(
+            "Only administrators and configured force-access roles can use this command.",
+            ephemeral=True,
+        )
+        return False
+
     async def manager_team(self, interaction: discord.Interaction):
         """Find the team owned by the manager or represented by their team role."""
         if not isinstance(interaction.user, discord.Member):
@@ -518,6 +532,119 @@ class ClubManagement(commands.Cog):
                     embed.set_author(name=interaction.guild.name)
             embed.set_footer(text="Made By EthanCoys")
             await channel.send(embed=embed)
+
+    @app_commands.command(name="forceconfig", description="Set roles allowed to force sign and release")
+    @app_commands.guild_only()
+    @app_commands.checks.has_permissions(administrator=True)
+    async def forceconfig(
+        self,
+        interaction: discord.Interaction,
+        role_1: discord.Role,
+        role_2: discord.Role | None = None,
+        role_3: discord.Role | None = None,
+        role_4: discord.Role | None = None,
+        role_5: discord.Role | None = None,
+    ):
+        roles = list(dict.fromkeys(role for role in (role_1, role_2, role_3, role_4, role_5) if role))
+        self.db.configure_force_roles(interaction.guild_id, [role.id for role in roles])
+        await interaction.response.send_message(
+            "Force-access roles set to: " + ", ".join(role.mention for role in roles),
+            ephemeral=True,
+        )
+
+    @app_commands.command(name="forcesign", description="Force sign a player to any configured team")
+    @app_commands.guild_only()
+    @app_commands.autocomplete(team=team_autocomplete)
+    async def forcesign(
+        self, interaction: discord.Interaction, player: discord.Member, team: str
+    ):
+        if not await self.require_force_access(interaction):
+            return
+        assert interaction.guild
+        record = self.db.team(interaction.guild.id, team)
+        role = interaction.guild.get_role(record["role_id"]) if record else None
+        if not record or not role:
+            await interaction.response.send_message("That team is not configured correctly.", ephemeral=True)
+            return
+        if player.bot:
+            await interaction.response.send_message("You cannot sign a bot.", ephemeral=True)
+            return
+        if role in player.roles:
+            await interaction.response.send_message("That player already has the team role.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        try:
+            await player.add_roles(role, reason=f"Force signed by {interaction.user}")
+        except discord.Forbidden:
+            await interaction.followup.send("I cannot assign that role. Check my role position.", ephemeral=True)
+            return
+        offer_id = self.db.create_offer(
+            interaction.guild.id,
+            player.id,
+            record["name"],
+            role.id,
+            interaction.user.id,
+            interaction.channel_id,
+        )
+        self.db.decide_offer(offer_id, "accepted")
+        self.db.add_team_member(interaction.guild.id, record["name"], player.id)
+        offer = self.db.offer(offer_id)
+        await OfferView(self.bot, self.db, offer_id).log_signing(
+            interaction.guild, player, role, offer
+        )
+        await interaction.followup.send(
+            f"Force signed {player.mention} to {role.mention}.", ephemeral=True
+        )
+
+    @app_commands.command(name="forcerelease", description="Force release a player from any configured team")
+    @app_commands.guild_only()
+    @app_commands.autocomplete(team=team_autocomplete)
+    async def forcerelease(
+        self, interaction: discord.Interaction, player: discord.Member, team: str
+    ):
+        if not await self.require_force_access(interaction):
+            return
+        assert interaction.guild
+        record = self.db.team(interaction.guild.id, team)
+        role = interaction.guild.get_role(record["role_id"]) if record else None
+        if not record or not role:
+            await interaction.response.send_message("That team is not configured correctly.", ephemeral=True)
+            return
+        if role not in player.roles:
+            await interaction.response.send_message("That player does not have the team role.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        try:
+            await player.remove_roles(role, reason=f"Force released by {interaction.user}")
+        except discord.Forbidden:
+            await interaction.followup.send("I cannot remove that role. Check my role position.", ephemeral=True)
+            return
+        self.db.remove_team_member(interaction.guild.id, record["name"], player.id)
+        config = self.db.config(interaction.guild.id)
+        channel = interaction.guild.get_channel(config["release_channel_id"]) if config else None
+        if isinstance(channel, discord.TextChannel):
+            roster = get_player_roster(self.db, interaction.guild, role, record["name"])
+            embed = discord.Embed(
+                description=(
+                    "## PLAYER RELEASED\n"
+                    f"### {player.mention} / {player.name}\n"
+                    f"was released by {inline_team_logo(record)}{role.mention}\n\n"
+                    "━━━━━━━━━━━━━━━━━━━━\n"
+                    f"- **TEAM** — {inline_team_logo(record)}{role.mention}\n"
+                    f"- **ACTIONED BY** — {interaction.user.mention}\n"
+                    f"- **ROSTER** — `{len(roster):02d} / {record['roster_cap']:02d}`"
+                ),
+                color=discord.Color.red(),
+                timestamp=discord.utils.utcnow(),
+            )
+            if record["logo_url"]:
+                embed.set_thumbnail(url=record["logo_url"])
+            embed.set_author(name=interaction.guild.name)
+            embed.set_footer(text="Made By EthanCoys")
+            await channel.send(embed=embed)
+        await interaction.followup.send(
+            f"Force released {player.mention} from {role.mention}.", ephemeral=True
+        )
 
     @app_commands.command(name="roster", description="View your team's signed roster")
     @app_commands.guild_only()
