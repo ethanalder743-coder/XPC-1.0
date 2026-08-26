@@ -11,7 +11,7 @@ This project is inspired only by common club-management workflows. It does not c
 - Accepting assigns the configured team role and writes a detailed signing log.
 - Offer and signing embeds show the team role colour, roster, and manager who sent the offer.
 - Rosters include only players who accepted an offer through the bot. Manually assigned team roles, owners, managers, and bots are not counted. `/release` removes the player from the saved roster.
-- `/release player team reason` removes the team role and writes a release log.
+- `/release player reason` removes the manager's automatically detected team role and writes a release log.
 - `/team add`, `/team remove`, and `/team list` manage selectable teams.
 - `/addteam` creates a team with a name, tagged role, tagged owner, and optional uploaded logo.
 - `/removeteam` removes a configured team without deleting its Discord role.
