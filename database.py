@@ -31,6 +31,7 @@ class Database:
                     role_id INTEGER NOT NULL,
                     owner_id INTEGER,
                     logo_url TEXT,
+                    emoji_id INTEGER,
                     roster_cap INTEGER NOT NULL DEFAULT 22,
                     PRIMARY KEY (guild_id, name),
                     UNIQUE (guild_id, role_id)
@@ -70,6 +71,7 @@ class Database:
             for column, kind in (
                 ("owner_id", "INTEGER"),
                 ("logo_url", "TEXT"),
+                ("emoji_id", "INTEGER"),
                 ("roster_cap", "INTEGER NOT NULL DEFAULT 22"),
             ):
                 if column not in team_columns:
@@ -83,11 +85,12 @@ class Database:
         owner_id: int | None = None,
         logo_url: str | None = None,
         roster_cap: int = 22,
+        emoji_id: int | None = None,
     ) -> None:
         with self.connect() as db:
             db.execute(
-                "INSERT INTO teams (guild_id, name, role_id, owner_id, logo_url, roster_cap) VALUES (?, ?, ?, ?, ?, ?)",
-                (guild_id, name.strip(), role_id, owner_id, logo_url, roster_cap),
+                "INSERT INTO teams (guild_id, name, role_id, owner_id, logo_url, roster_cap, emoji_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (guild_id, name.strip(), role_id, owner_id, logo_url, roster_cap, emoji_id),
             )
 
     def remove_team(self, guild_id: int, name: str) -> bool:
@@ -102,7 +105,7 @@ class Database:
         with self.connect() as db:
             return list(
                 db.execute(
-                    "SELECT name, role_id, owner_id, logo_url, roster_cap FROM teams WHERE guild_id = ? ORDER BY name",
+                    "SELECT name, role_id, owner_id, logo_url, roster_cap, emoji_id FROM teams WHERE guild_id = ? ORDER BY name",
                     (guild_id,),
                 )
             )
@@ -110,9 +113,18 @@ class Database:
     def team(self, guild_id: int, name: str) -> sqlite3.Row | None:
         with self.connect() as db:
             return db.execute(
-                "SELECT name, role_id, owner_id, logo_url, roster_cap FROM teams WHERE guild_id = ? AND name = ?",
+                "SELECT name, role_id, owner_id, logo_url, roster_cap, emoji_id FROM teams WHERE guild_id = ? AND name = ?",
                 (guild_id, name.strip()),
             ).fetchone()
+
+    def update_team_logo(
+        self, guild_id: int, name: str, logo_url: str, emoji_id: int | None
+    ) -> None:
+        with self.connect() as db:
+            db.execute(
+                "UPDATE teams SET logo_url = ?, emoji_id = ? WHERE guild_id = ? AND name = ?",
+                (logo_url, emoji_id, guild_id, name.strip()),
+            )
 
     def configure_guild(
         self,
