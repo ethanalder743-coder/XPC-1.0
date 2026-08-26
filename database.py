@@ -108,6 +108,13 @@ class Database:
                 if column not in team_columns:
                     db.execute(f"ALTER TABLE teams ADD COLUMN {column} {kind}")
 
+            db.execute(
+                """
+                UPDATE welcome_config SET headline = '{display} has landed.'
+                WHERE headline = '{user} just joined {server}!'
+                """
+            )
+
     def add_team(
         self,
         guild_id: int,
