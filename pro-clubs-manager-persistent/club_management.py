@@ -142,12 +142,15 @@ class OfferView(discord.ui.View):
             roster_cap = team["roster_cap"] if team else 22
             owner_text = f"<@{team['owner_id']}>" if team and team["owner_id"] else "Not configured"
             embed = discord.Embed(
-                title="Offer Accepted",
+                title="PLAYER SIGNED",
                 description=(
-                    f"{member.mention} **{member.display_name}** has signed with ⚽ {role.mention}\n\n"
-                    f"• ⚽ **Franchise Owner** - {owner_text}\n\n"
-                    f"• 🤝 **Signed By** - <@{offer['offered_by']}>\n\n"
-                    f"• 📋 **Roster Cap** - {len(roster)}/{roster_cap}"
+                    f"### {member.mention}  •  {member.display_name}\n"
+                    f"has signed with {role.mention}\n\n"
+                    "━━━━━━━━━━━━━━━━━━━━\n"
+                    f"**👑  TEAM OWNER**\n{owner_text}\n\n"
+                    f"**🤝  SIGNED BY**\n<@{offer['offered_by']}>\n\n"
+                    f"**📋  ROSTER CAP**\n"
+                    f"`{len(roster):02d} / {roster_cap:02d}` players signed"
                 ),
                 color=role.color if role.color.value else discord.Color.blurple(),
                 timestamp=discord.utils.utcnow(),
@@ -155,12 +158,15 @@ class OfferView(discord.ui.View):
             if team and team["logo_url"]:
                 embed.set_thumbnail(url=team["logo_url"])
                 embed.set_author(
-                    name=f"XPC | {offer['team_name'].upper()} | FC26",
-                    icon_url=team["logo_url"],
+                    name=guild.name.upper(),
+                    icon_url=guild.icon.url if guild.icon else team["logo_url"],
                 )
             else:
-                embed.set_author(name=f"XPC | {offer['team_name'].upper()} | FC26")
-            embed.set_footer(text=f"XPC BOT • Offer #{self.offer_id}")
+                if guild.icon:
+                    embed.set_author(name=guild.name.upper(), icon_url=guild.icon.url)
+                else:
+                    embed.set_author(name=guild.name.upper())
+            embed.set_footer(text="Made By EthanCoys  •  XPC Club Management")
             await channel.send(embed=embed)
 
 
@@ -332,14 +338,14 @@ class ClubManagement(commands.Cog):
                 title="PLAYER RELEASED",
                 description=(
                     f"### {player.mention}  •  {player.display_name}\n"
-                    f"has been released from {role.mention}\n\n"
+                    f"was released by {role.mention}\n\n"
                     "━━━━━━━━━━━━━━━━━━━━\n"
                     f"**👑  TEAM OWNER**\n{owner_text}\n\n"
                     f"**📋  ROSTER CAP**\n"
                     f"`{len(roster):02d} / {roster_cap:02d}` players signed"
                     f"{reason_text}"
                 ),
-                color=role.color if role.color.value else discord.Color.red(),
+                color=discord.Color.red(),
                 timestamp=discord.utils.utcnow(),
             )
             if record["logo_url"]:
