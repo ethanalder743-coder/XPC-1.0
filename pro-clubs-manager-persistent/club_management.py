@@ -403,18 +403,20 @@ class ClubManagement(commands.Cog):
             "{server}": member.guild.name,
             "{count}": str(member.guild.member_count or 0),
         }
-        headline = config["headline"] or "{display} has landed."
+        message_headline = config["headline"] or "Welcome {user} to {server}!"
         for placeholder, value in replacements.items():
-            headline = headline.replace(placeholder, value)
+            message_headline = message_headline.replace(placeholder, value)
+        image_headline = f"{member.display_name} has landed."
         try:
             avatar_bytes = await member.display_avatar.with_size(256).read()
             card = await asyncio.to_thread(
                 render_welcome_card,
                 config["banner_path"],
                 avatar_bytes,
-                headline,
+                image_headline,
             )
             await channel.send(
+                content=message_headline,
                 file=discord.File(card, filename="welcome.png"),
             )
             return True
@@ -1147,14 +1149,14 @@ class ClubManagement(commands.Cog):
     @app_commands.describe(
         channel="Channel where welcome cards are posted",
         banner="Your wide welcome background image",
-        headline="Large banner text; supports {user}, {display}, {server}, and {count}",
+        headline="Message shown above the image; supports {user}, {display}, {server}, and {count}",
     )
     async def welcomesetup(
         self,
         interaction: discord.Interaction,
         channel: discord.TextChannel,
         banner: discord.Attachment,
-        headline: str = "{display} has landed.",
+        headline: str = "Welcome {user} to {server}!",
     ):
         if banner.content_type and not banner.content_type.startswith("image/"):
             await interaction.response.send_message("The banner must be an image file.", ephemeral=True)
@@ -1178,7 +1180,7 @@ class ClubManagement(commands.Cog):
         )
         await interaction.followup.send(
             f"Welcome system configured for {channel.mention}.\n"
-            "Headline placeholders: `{user}`, `{display}`, `{server}`, `{count}`.",
+            "Message headline placeholders: `{user}`, `{display}`, `{server}`, `{count}`.",
             ephemeral=True,
         )
 
