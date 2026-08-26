@@ -22,6 +22,7 @@ This project is inspired only by common club-management workflows. It does not c
 - `/forceconfig` sets up to five staff roles allowed to use `/forcesign` and `/forcerelease`. Administrators always have access. Force actions update Discord roles, saved rosters, and log channels.
 - `/welcomesetup` lets an administrator choose a welcome channel, upload a custom banner, and set the smaller subtext. New members receive a generated card with their avatar and a dark translucent centre panel. The headline automatically uses the joined member's real server display name followed by “has landed.” Subtext supports `{user}`, `{display}`, `{server}`, and `{count}`.
 - `/welcometest` posts a test welcome card for the administrator in the configured welcome channel.
+- `/totwsetweek` opens a numbered TOTW week. Signed players and team staff use `/uploadstats` with Summary plus their position-specific tab; CDMs also upload Defending. OCR reads the visible ratings and `/totwlist` selects a 3-5-2: GK, three CB/FB, two CDMs, CAM, two WMs, and two STs.
 - `/config_setup` configures signing/release channels and exactly two management roles.
 - Team names autocomplete from the server's saved configuration.
 - SQLite stores teams, configuration, and offers.
