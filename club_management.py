@@ -699,6 +699,8 @@ class ClubManagement(commands.Cog):
     async def cog_app_command_error(
         self, interaction: discord.Interaction, error: app_commands.AppCommandError
     ) -> None:
+        if isinstance(error, app_commands.CheckFailure) and interaction.response.is_done():
+            return
         if isinstance(error, app_commands.MissingPermissions):
             message = "You do not have permission to use this command."
         elif isinstance(error, app_commands.BotMissingPermissions):
