@@ -141,32 +141,34 @@ class OfferView(discord.ui.View):
             team = self.db.team(offer["guild_id"], offer["team_name"])
             roster_cap = team["roster_cap"] if team else 22
             embed = discord.Embed(
-                title="Offer Accepted",
+                title="🟢  SIGNING CONFIRMED",
                 description=(
-                    f"{member.mention} has signed with {role.mention}"
+                    f"### Welcome, {member.display_name}\n"
+                    f"{member.mention} has officially joined {role.mention}."
                 ),
                 color=role.color if role.color.value else discord.Color.blurple(),
+                timestamp=discord.utils.utcnow(),
             )
             if team and team["owner_id"]:
                 embed.add_field(
-                    name="• ⚽ Franchise Owner",
+                    name="CLUB OWNER",
                     value=f"<@{team['owner_id']}>",
-                    inline=False,
+                    inline=True,
                 )
             embed.add_field(
-                name="• 🤝 Signed By",
+                name="SIGNED BY",
                 value=f"<@{offer['offered_by']}>",
-                inline=False,
+                inline=True,
             )
             embed.add_field(
-                name="• 📋 Roster Cap",
-                value=f"**{len(roster)}/{roster_cap}**",
-                inline=False,
+                name="SQUAD STATUS",
+                value=f"**{len(roster)} / {roster_cap}** players",
+                inline=True,
             )
             if team and team["logo_url"]:
                 embed.set_thumbnail(url=team["logo_url"])
-            embed.set_author(name=f"XPC | {offer['team_name'].upper()} | FC26")
-            embed.set_footer(text=f"XPC BOT  •  Offer #{self.offer_id}")
+            embed.set_author(name="XPC  •  TRANSFER CENTRE")
+            embed.set_footer(text=f"{offer['team_name']}  •  Offer #{self.offer_id}")
             await channel.send(embed=embed)
 
 
@@ -329,29 +331,36 @@ class ClubManagement(commands.Cog):
         if isinstance(channel, discord.TextChannel):
             roster = get_player_roster(self.db, interaction.guild, role, record["name"])
             roster_cap = record["roster_cap"] if record else 22
-            reason_line = f"\n\n• 📝 **Reason** — {reason}" if reason != "No reason provided" else ""
             embed = discord.Embed(
-                title="Player Released",
+                title="🔴  PLAYER RELEASED",
                 description=(
-                    f"{player.mention}\n"
-                    f"**{player.display_name}** has been released\n"
-                    f"from ⚽ {role.mention}\n\n"
-                    f"• 📋 **Roster Cap** - {len(roster)}/{roster_cap}\n\n"
-                    f"• 🛡️ **Actioned By** — {interaction.user.mention}\n"
-                    f"*{interaction.user.display_name}*"
-                    f"{reason_line}"
+                    f"### {player.display_name} departs\n"
+                    f"{player.mention} has been released from {role.mention}."
                 ),
                 color=role.color if role.color.value else discord.Color.red(),
+                timestamp=discord.utils.utcnow(),
+            )
+            embed.add_field(name="CLUB", value=role.mention, inline=True)
+            embed.add_field(name="ACTIONED BY", value=interaction.user.mention, inline=True)
+            embed.add_field(
+                name="SQUAD STATUS",
+                value=f"**{len(roster)} / {roster_cap}** players",
+                inline=True,
+            )
+            embed.add_field(
+                name="REASON",
+                value=reason,
+                inline=False,
             )
             if record["logo_url"]:
                 embed.set_thumbnail(url=record["logo_url"])
                 embed.set_author(
-                    name=f"XPC | {record['name'].upper()} | FC26",
+                    name="XPC  •  TRANSFER CENTRE",
                     icon_url=record["logo_url"],
                 )
             else:
-                embed.set_author(name=f"XPC | {record['name'].upper()} | FC26")
-            embed.set_footer(text="XPC BOT • Pro Clubs Management")
+                embed.set_author(name="XPC  •  TRANSFER CENTRE")
+            embed.set_footer(text=f"{record['name']}  •  Pro Clubs Management")
             await channel.send(embed=embed)
 
     team_group = app_commands.Group(name="team", description="Configure club teams", guild_only=True)
