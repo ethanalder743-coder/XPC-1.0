@@ -323,36 +323,40 @@ class ClubManagement(commands.Cog):
         if isinstance(channel, discord.TextChannel):
             roster = get_player_roster(self.db, interaction.guild, role, record["name"])
             roster_cap = record["roster_cap"] if record else 22
+            owner_text = f"<@{record['owner_id']}>" if record["owner_id"] else "Not configured"
+            reason_text = (
+                f"\n\n**RELEASE NOTE**\n> {reason}"
+                if reason != "No reason provided" else ""
+            )
             embed = discord.Embed(
-                title="🔴  PLAYER RELEASED",
+                title="PLAYER RELEASED",
                 description=(
-                    f"### {player.display_name} departs\n"
-                    f"{player.mention} has been released from {role.mention}."
+                    f"### {player.mention}  •  {player.display_name}\n"
+                    f"has been released from {role.mention}\n\n"
+                    "━━━━━━━━━━━━━━━━━━━━\n"
+                    f"**👑  TEAM OWNER**\n{owner_text}\n\n"
+                    f"**📋  ROSTER CAP**\n"
+                    f"`{len(roster):02d} / {roster_cap:02d}` players signed"
+                    f"{reason_text}"
                 ),
                 color=role.color if role.color.value else discord.Color.red(),
                 timestamp=discord.utils.utcnow(),
             )
-            embed.add_field(name="CLUB", value=role.mention, inline=True)
-            embed.add_field(name="ACTIONED BY", value=interaction.user.mention, inline=True)
-            embed.add_field(
-                name="SQUAD STATUS",
-                value=f"**{len(roster)} / {roster_cap}** players",
-                inline=True,
-            )
-            embed.add_field(
-                name="REASON",
-                value=reason,
-                inline=False,
-            )
             if record["logo_url"]:
                 embed.set_thumbnail(url=record["logo_url"])
                 embed.set_author(
-                    name="XPC  •  TRANSFER CENTRE",
-                    icon_url=record["logo_url"],
+                    name=interaction.guild.name.upper(),
+                    icon_url=interaction.guild.icon.url if interaction.guild.icon else record["logo_url"],
                 )
             else:
-                embed.set_author(name="XPC  •  TRANSFER CENTRE")
-            embed.set_footer(text=f"{record['name']}  •  Pro Clubs Management")
+                if interaction.guild.icon:
+                    embed.set_author(
+                        name=interaction.guild.name.upper(),
+                        icon_url=interaction.guild.icon.url,
+                    )
+                else:
+                    embed.set_author(name=interaction.guild.name.upper())
+            embed.set_footer(text="Made By EthanCoys  •  XPC Club Management")
             await channel.send(embed=embed)
 
     team_group = app_commands.Group(name="team", description="Configure club teams", guild_only=True)
