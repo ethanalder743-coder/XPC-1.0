@@ -76,6 +76,11 @@ class Database:
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     closed_at TEXT
                 );
+
+                CREATE TABLE IF NOT EXISTS force_config (
+                    guild_id INTEGER PRIMARY KEY,
+                    role_ids TEXT NOT NULL
+                );
                 """
             )
 
@@ -305,3 +310,22 @@ class Database:
                 (channel_id,),
             )
             return cursor.rowcount > 0
+
+    def configure_force_roles(self, guild_id: int, role_ids: list[int]) -> None:
+        with self.connect() as db:
+            db.execute(
+                """
+                INSERT INTO force_config (guild_id, role_ids) VALUES (?, ?)
+                ON CONFLICT(guild_id) DO UPDATE SET role_ids = excluded.role_ids
+                """,
+                (guild_id, ",".join(str(role_id) for role_id in role_ids)),
+            )
+
+    def force_role_ids(self, guild_id: int) -> set[int]:
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT role_ids FROM force_config WHERE guild_id = ?", (guild_id,)
+            ).fetchone()
+        if not row or not row["role_ids"]:
+            return set()
+        return {int(value) for value in row["role_ids"].split(",") if value}
