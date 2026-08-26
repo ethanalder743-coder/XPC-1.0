@@ -89,6 +89,25 @@ class Database:
                     headline TEXT NOT NULL,
                     subtext TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS totw_config (
+                    guild_id INTEGER PRIMARY KEY,
+                    active_week INTEGER NOT NULL DEFAULT 1
+                );
+
+                CREATE TABLE IF NOT EXISTS totw_submissions (
+                    guild_id INTEGER NOT NULL,
+                    week INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    team_name TEXT NOT NULL,
+                    position_group TEXT NOT NULL,
+                    summary_rating REAL NOT NULL,
+                    primary_rating REAL NOT NULL,
+                    defending_rating REAL,
+                    score REAL NOT NULL,
+                    submitted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (guild_id, week, user_id)
+                );
                 """
             )
 
@@ -373,3 +392,80 @@ class Database:
             return db.execute(
                 "SELECT * FROM welcome_config WHERE guild_id = ?", (guild_id,)
             ).fetchone()
+
+    def signed_team_for_user(self, guild_id: int, user_id: int) -> sqlite3.Row | None:
+        with self.connect() as db:
+            return db.execute(
+                """
+                SELECT t.name, t.role_id, t.owner_id, t.logo_url, t.roster_cap, t.emoji_id
+                FROM team_members tm
+                JOIN teams t ON t.guild_id = tm.guild_id AND t.name = tm.team_name
+                WHERE tm.guild_id = ? AND tm.player_id = ?
+                ORDER BY tm.joined_at DESC LIMIT 1
+                """,
+                (guild_id, user_id),
+            ).fetchone()
+
+    def set_totw_week(self, guild_id: int, week: int) -> None:
+        with self.connect() as db:
+            db.execute(
+                """
+                INSERT INTO totw_config (guild_id, active_week) VALUES (?, ?)
+                ON CONFLICT(guild_id) DO UPDATE SET active_week = excluded.active_week
+                """,
+                (guild_id, week),
+            )
+
+    def totw_week(self, guild_id: int) -> int:
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT active_week FROM totw_config WHERE guild_id = ?", (guild_id,)
+            ).fetchone()
+        return int(row["active_week"]) if row else 1
+
+    def save_totw_submission(
+        self,
+        guild_id: int,
+        week: int,
+        user_id: int,
+        team_name: str,
+        position_group: str,
+        summary_rating: float,
+        primary_rating: float,
+        defending_rating: float | None,
+        score: float,
+    ) -> None:
+        with self.connect() as db:
+            db.execute(
+                """
+                INSERT INTO totw_submissions
+                    (guild_id, week, user_id, team_name, position_group,
+                     summary_rating, primary_rating, defending_rating, score)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(guild_id, week, user_id) DO UPDATE SET
+                    team_name = excluded.team_name,
+                    position_group = excluded.position_group,
+                    summary_rating = excluded.summary_rating,
+                    primary_rating = excluded.primary_rating,
+                    defending_rating = excluded.defending_rating,
+                    score = excluded.score,
+                    submitted_at = CURRENT_TIMESTAMP
+                """,
+                (
+                    guild_id, week, user_id, team_name, position_group,
+                    summary_rating, primary_rating, defending_rating, score,
+                ),
+            )
+
+    def totw_submissions(self, guild_id: int, week: int) -> list[sqlite3.Row]:
+        with self.connect() as db:
+            return list(
+                db.execute(
+                    """
+                    SELECT * FROM totw_submissions
+                    WHERE guild_id = ? AND week = ?
+                    ORDER BY score DESC, summary_rating DESC, submitted_at ASC
+                    """,
+                    (guild_id, week),
+                )
+            )
