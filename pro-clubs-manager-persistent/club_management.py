@@ -3,6 +3,7 @@ import io
 import re
 import sqlite3
 from pathlib import Path
+from typing import Literal
 
 import discord
 from discord import app_commands
@@ -10,6 +11,7 @@ from discord.ext import commands
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 from database import Database
+from stats_ocr import extract_rating
 
 
 def get_player_roster(database: Database, guild: discord.Guild, role: discord.Role, team_name: str):
@@ -470,6 +472,17 @@ class ClubManagement(commands.Cog):
         )
         return False
 
+    def totw_team_for_member(self, member: discord.Member):
+        signed_team = self.db.signed_team_for_user(member.guild.id, member.id)
+        if signed_team:
+            return signed_team
+        role_ids = {role.id for role in member.roles}
+        matches = [
+            team for team in self.db.teams(member.guild.id)
+            if team["owner_id"] == member.id or team["role_id"] in role_ids
+        ]
+        return matches[0] if len(matches) == 1 else None
+
     async def manager_team(self, interaction: discord.Interaction):
         """Find the team owned by the manager or represented by their team role."""
         if not isinstance(interaction.user, discord.Member):
@@ -789,6 +802,140 @@ class ClubManagement(commands.Cog):
             embed.set_author(name=interaction.guild.name)
         embed.set_footer(text="Made By EthanCoys")
         await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @app_commands.command(name="totwsetweek", description="Set the active Team of the Week number")
+    @app_commands.guild_only()
+    @app_commands.checks.has_permissions(administrator=True)
+    async def totwsetweek(
+        self, interaction: discord.Interaction, week: app_commands.Range[int, 1, 999]
+    ):
+        self.db.set_totw_week(interaction.guild_id, week)
+        await interaction.response.send_message(
+            f"TOTW submissions are now open for week **{week}**.", ephemeral=True
+        )
+
+    @app_commands.command(name="uploadstats", description="Upload your FC performance screenshots for TOTW")
+    @app_commands.guild_only()
+    @app_commands.describe(
+        position="Your 3-5-2 position group",
+        summary="Screenshot with the Summary tab selected",
+        stats="Shooting, Passing, Defending, or Goalkeeping screenshot for your position",
+        defending="CDM only: screenshot with the Defending tab selected",
+    )
+    async def uploadstats(
+        self,
+        interaction: discord.Interaction,
+        position: Literal["ST", "WM", "CAM", "CDM", "CB/FB", "GK"],
+        summary: discord.Attachment,
+        stats: discord.Attachment,
+        defending: discord.Attachment | None = None,
+    ):
+        assert interaction.guild and isinstance(interaction.user, discord.Member)
+        team = self.totw_team_for_member(interaction.user)
+        if not team:
+            await interaction.response.send_message(
+                "Only signed players, team owners, managers, and co-managers can submit TOTW stats.",
+                ephemeral=True,
+            )
+            return
+        uploads = [summary, stats] + ([defending] if defending else [])
+        if any(item.content_type and not item.content_type.startswith("image/") for item in uploads):
+            await interaction.response.send_message("All stat uploads must be images.", ephemeral=True)
+            return
+        if position == "CDM" and defending is None:
+            await interaction.response.send_message(
+                "CDMs must upload Summary, Passing, and Defending screenshots.", ephemeral=True
+            )
+            return
+        label_by_position = {
+            "ST": "Shooting",
+            "WM": "Passing",
+            "CAM": "Passing",
+            "CDM": "Passing",
+            "CB/FB": "Defending",
+            "GK": "Goalkeeper",
+        }
+        await interaction.response.defer(ephemeral=True)
+        try:
+            summary_bytes, stats_bytes = await asyncio.gather(summary.read(), stats.read())
+            summary_rating = await asyncio.to_thread(
+                extract_rating, summary_bytes, "Total"
+            )
+            primary_rating = await asyncio.to_thread(
+                extract_rating, stats_bytes, label_by_position[position]
+            )
+            defending_rating = None
+            if position == "CDM" and defending:
+                defending_rating = await asyncio.to_thread(
+                    extract_rating, await defending.read(), "Defending"
+                )
+        except ValueError as error:
+            await interaction.followup.send(str(error), ephemeral=True)
+            return
+
+        if position == "CDM":
+            score = summary_rating * 0.50 + primary_rating * 0.25 + defending_rating * 0.25
+        else:
+            score = summary_rating * 0.60 + primary_rating * 0.40
+        week = self.db.totw_week(interaction.guild.id)
+        self.db.save_totw_submission(
+            interaction.guild.id,
+            week,
+            interaction.user.id,
+            team["name"],
+            position,
+            summary_rating,
+            primary_rating,
+            defending_rating,
+            round(score, 3),
+        )
+        extra = f" | Defending {defending_rating:.1f}" if defending_rating is not None else ""
+        await interaction.followup.send(
+            f"Week {week} stats saved for **{team['name']}** at **{position}**.\n"
+            f"Summary {summary_rating:.1f} | {label_by_position[position]} {primary_rating:.1f}{extra} | TOTW score **{score:.2f}**",
+            ephemeral=True,
+        )
+
+    @app_commands.command(name="totwlist", description="Show the current 3-5-2 Team of the Week")
+    @app_commands.guild_only()
+    async def totwlist(self, interaction: discord.Interaction):
+        week = self.db.totw_week(interaction.guild_id)
+        submissions = self.db.totw_submissions(interaction.guild_id, week)
+        slot_plan = [
+            ("GK", "GK", 1),
+            ("CB/FB", "DEF", 3),
+            ("CDM", "CDM", 2),
+            ("CAM", "CAM", 1),
+            ("WM", "WM", 2),
+            ("ST", "ST", 2),
+        ]
+        lines = []
+        selected_count = 0
+        for position_group, label, count in slot_plan:
+            candidates = [row for row in submissions if row["position_group"] == position_group]
+            for index in range(count):
+                if index < len(candidates):
+                    row = candidates[index]
+                    lines.append(
+                        f"**{label}**  <@{row['user_id']}>  -  {row['team_name']}  -  `{row['score']:.2f}`"
+                    )
+                    selected_count += 1
+                else:
+                    lines.append(f"**{label}**  *Vacant*")
+        embed = discord.Embed(
+            title=f"TEAM OF THE WEEK - WEEK {week}",
+            description=(
+                "**Formation: 3-5-2**\n\n" + "\n".join(lines)
+            ),
+            color=discord.Color.gold(),
+            timestamp=discord.utils.utcnow(),
+        )
+        embed.set_footer(
+            text=f"{selected_count}/11 positions filled - Made By EthanCoys"
+        )
+        if interaction.guild.icon:
+            embed.set_thumbnail(url=interaction.guild.icon.url)
+        await interaction.response.send_message(embed=embed)
 
     team_group = app_commands.Group(name="team", description="Configure club teams", guild_only=True)
 
@@ -1125,4 +1272,3 @@ async def setup(bot: commands.Bot, database: Database) -> None:
     await bot.add_cog(ClubManagement(bot, database))
     bot.add_view(TicketPanelView(bot, database, ["General Support"]))
     bot.add_view(TicketCloseView(database))
-
