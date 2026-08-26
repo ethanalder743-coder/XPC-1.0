@@ -31,6 +31,7 @@ class Database:
                     role_id INTEGER NOT NULL,
                     owner_id INTEGER,
                     logo_url TEXT,
+                    roster_cap INTEGER NOT NULL DEFAULT 22,
                     PRIMARY KEY (guild_id, name),
                     UNIQUE (guild_id, role_id)
                 );
@@ -66,7 +67,11 @@ class Database:
                     db.execute(f"ALTER TABLE guild_config ADD COLUMN {column} INTEGER")
 
             team_columns = {row["name"] for row in db.execute("PRAGMA table_info(teams)")}
-            for column, kind in (("owner_id", "INTEGER"), ("logo_url", "TEXT")):
+            for column, kind in (
+                ("owner_id", "INTEGER"),
+                ("logo_url", "TEXT"),
+                ("roster_cap", "INTEGER NOT NULL DEFAULT 22"),
+            ):
                 if column not in team_columns:
                     db.execute(f"ALTER TABLE teams ADD COLUMN {column} {kind}")
 
@@ -77,11 +82,12 @@ class Database:
         role_id: int,
         owner_id: int | None = None,
         logo_url: str | None = None,
+        roster_cap: int = 22,
     ) -> None:
         with self.connect() as db:
             db.execute(
-                "INSERT INTO teams (guild_id, name, role_id, owner_id, logo_url) VALUES (?, ?, ?, ?, ?)",
-                (guild_id, name.strip(), role_id, owner_id, logo_url),
+                "INSERT INTO teams (guild_id, name, role_id, owner_id, logo_url, roster_cap) VALUES (?, ?, ?, ?, ?, ?)",
+                (guild_id, name.strip(), role_id, owner_id, logo_url, roster_cap),
             )
 
     def remove_team(self, guild_id: int, name: str) -> bool:
@@ -96,7 +102,7 @@ class Database:
         with self.connect() as db:
             return list(
                 db.execute(
-                    "SELECT name, role_id, owner_id, logo_url FROM teams WHERE guild_id = ? ORDER BY name",
+                    "SELECT name, role_id, owner_id, logo_url, roster_cap FROM teams WHERE guild_id = ? ORDER BY name",
                     (guild_id,),
                 )
             )
@@ -104,7 +110,7 @@ class Database:
     def team(self, guild_id: int, name: str) -> sqlite3.Row | None:
         with self.connect() as db:
             return db.execute(
-                "SELECT name, role_id, owner_id, logo_url FROM teams WHERE guild_id = ? AND name = ?",
+                "SELECT name, role_id, owner_id, logo_url, roster_cap FROM teams WHERE guild_id = ? AND name = ?",
                 (guild_id, name.strip()),
             ).fetchone()
 
