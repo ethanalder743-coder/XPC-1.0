@@ -176,6 +176,146 @@ class OfferView(discord.ui.View):
             await channel.send(embed=embed)
 
 
+class TicketCloseView(discord.ui.View):
+    def __init__(self, database: Database) -> None:
+        super().__init__(timeout=None)
+        self.db = database
+
+    @discord.ui.button(
+        label="Close Ticket",
+        style=discord.ButtonStyle.danger,
+        custom_id="xpc_tickets:close",
+    )
+    async def close_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.guild is None or not isinstance(interaction.channel, discord.TextChannel):
+            return
+        ticket = self.db.ticket(interaction.channel.id)
+        config = self.db.ticket_config(interaction.guild.id)
+        if not ticket or ticket["status"] != "open":
+            await interaction.response.send_message("This ticket is already closed.", ephemeral=True)
+            return
+        member = interaction.user
+        allowed = member.id == ticket["user_id"] or member.guild_permissions.administrator
+        if config and isinstance(member, discord.Member):
+            allowed = allowed or any(role.id == config["support_role_id"] for role in member.roles)
+        if not allowed:
+            await interaction.response.send_message(
+                "Only the ticket owner or support team can close this ticket.", ephemeral=True
+            )
+            return
+        await interaction.response.defer(ephemeral=True)
+        if not self.db.close_ticket(interaction.channel.id):
+            await interaction.followup.send("This ticket is already closed.", ephemeral=True)
+            return
+        opener = interaction.guild.get_member(ticket["user_id"])
+        if opener:
+            await interaction.channel.set_permissions(
+                opener, view_channel=True, send_messages=False, read_message_history=True
+            )
+        new_name = interaction.channel.name
+        if not new_name.startswith("closed-"):
+            new_name = f"closed-{new_name}"[:100]
+        await interaction.channel.edit(name=new_name, reason=f"Ticket closed by {member}")
+        button.disabled = True
+        await interaction.message.edit(view=self)
+        await interaction.channel.send(
+            embed=discord.Embed(
+                title="Ticket Closed",
+                description=f"Closed by {member.mention}.",
+                color=discord.Color.red(),
+                timestamp=discord.utils.utcnow(),
+            )
+        )
+        await interaction.followup.send("Ticket closed.", ephemeral=True)
+
+
+class TicketProblemSelect(discord.ui.Select):
+    def __init__(self, bot: commands.Bot, database: Database, problems: list[str]) -> None:
+        self.bot = bot
+        self.db = database
+        options = [
+            discord.SelectOption(label=problem[:100], value=problem[:100])
+            for problem in problems[:25]
+        ] or [discord.SelectOption(label="General Support", value="General Support")]
+        super().__init__(
+            placeholder="Choose what you need help with",
+            min_values=1,
+            max_values=1,
+            options=options,
+            custom_id="xpc_tickets:problem",
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+            return
+        await interaction.response.defer(ephemeral=True)
+        config = self.db.ticket_config(interaction.guild.id)
+        if not config:
+            await interaction.followup.send("The ticket system is not configured.", ephemeral=True)
+            return
+        existing = self.db.open_ticket_for_user(interaction.guild.id, interaction.user.id)
+        if existing:
+            channel = interaction.guild.get_channel(existing["channel_id"])
+            if channel:
+                await interaction.followup.send(
+                    f"You already have an open ticket: {channel.mention}", ephemeral=True
+                )
+                return
+            self.db.close_ticket(existing["channel_id"])
+        category = interaction.guild.get_channel(config["category_id"])
+        support_role = interaction.guild.get_role(config["support_role_id"])
+        if not isinstance(category, discord.CategoryChannel) or support_role is None:
+            await interaction.followup.send(
+                "The ticket category or support role was deleted. Ask an administrator to run /ticketsetup again.",
+                ephemeral=True,
+            )
+            return
+        overwrites = {
+            interaction.guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            interaction.user: discord.PermissionOverwrite(
+                view_channel=True, send_messages=True, read_message_history=True, attach_files=True
+            ),
+            support_role: discord.PermissionOverwrite(
+                view_channel=True, send_messages=True, read_message_history=True
+            ),
+            interaction.guild.me: discord.PermissionOverwrite(
+                view_channel=True, send_messages=True, manage_channels=True
+            ),
+        }
+        safe_user = re.sub(r"[^a-z0-9-]", "-", interaction.user.name.lower()).strip("-")
+        channel = await interaction.guild.create_text_channel(
+            name=f"ticket-{safe_user or interaction.user.id}"[:100],
+            category=category,
+            overwrites=overwrites,
+            reason=f"Ticket opened by {interaction.user}",
+        )
+        problem = self.values[0]
+        self.db.create_ticket(channel.id, interaction.guild.id, interaction.user.id, problem)
+        embed = discord.Embed(
+            title=problem,
+            description=(
+                f"{interaction.user.mention}, describe the problem and include any useful screenshots.\n\n"
+                "A member of the support team will respond here."
+            ),
+            color=discord.Color.blurple(),
+            timestamp=discord.utils.utcnow(),
+        )
+        embed.set_footer(text="Made By EthanCoys")
+        await channel.send(
+            content=f"{interaction.user.mention} {support_role.mention}",
+            embed=embed,
+            view=TicketCloseView(self.db),
+            allowed_mentions=discord.AllowedMentions(users=True, roles=True),
+        )
+        await interaction.followup.send(f"Your ticket is ready: {channel.mention}", ephemeral=True)
+
+
+class TicketPanelView(discord.ui.View):
+    def __init__(self, bot: commands.Bot, database: Database, problems: list[str]) -> None:
+        super().__init__(timeout=None)
+        self.add_item(TicketProblemSelect(bot, database, problems))
+
+
 class ClubManagement(commands.Cog):
     def __init__(self, bot: commands.Bot, database: Database) -> None:
         self.bot = bot
@@ -629,6 +769,61 @@ class ClubManagement(commands.Cog):
             f"Rules cards posted in {channel.mention}.", ephemeral=True
         )
 
+    @app_commands.command(name="ticketsetup", description="Create and configure the support ticket panel")
+    @app_commands.guild_only()
+    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.describe(
+        panel_channel="Channel where users open tickets",
+        ticket_category="Category where private ticket channels are created",
+        support_role="Role that can view tickets and gets pinged",
+        problems="Problem choices separated by commas",
+    )
+    async def ticketsetup(
+        self,
+        interaction: discord.Interaction,
+        panel_channel: discord.TextChannel,
+        ticket_category: discord.CategoryChannel,
+        support_role: discord.Role,
+        problems: str = "General Support,Report a Player,Team Issue,Transfer Issue,Other",
+    ):
+        problem_list = [item.strip() for item in problems.split(",") if item.strip()]
+        if not problem_list:
+            await interaction.response.send_message("Add at least one problem type.", ephemeral=True)
+            return
+        if len(problem_list) > 25:
+            await interaction.response.send_message("You can configure up to 25 problem types.", ephemeral=True)
+            return
+        self.db.configure_tickets(
+            interaction.guild_id,
+            panel_channel.id,
+            ticket_category.id,
+            support_role.id,
+            "\n".join(problem_list),
+        )
+        embed = discord.Embed(
+            title="SUPPORT TICKETS",
+            description=(
+                "Choose the problem you need help with below.\n\n"
+                "A private channel will be created for you and the support team."
+            ),
+            color=discord.Color.blurple(),
+            timestamp=discord.utils.utcnow(),
+        )
+        if interaction.guild.icon:
+            embed.set_thumbnail(url=interaction.guild.icon.url)
+        embed.set_author(name=interaction.guild.name)
+        embed.set_footer(text="Made By EthanCoys")
+        await panel_channel.send(
+            embed=embed,
+            view=TicketPanelView(self.bot, self.db, problem_list),
+        )
+        await interaction.response.send_message(
+            f"Ticket panel posted in {panel_channel.mention}. {support_role.mention} will be pinged for new tickets.",
+            ephemeral=True,
+        )
+
 
 async def setup(bot: commands.Bot, database: Database) -> None:
     await bot.add_cog(ClubManagement(bot, database))
+    bot.add_view(TicketPanelView(bot, database, ["General Support"]))
+    bot.add_view(TicketCloseView(database))
