@@ -97,7 +97,7 @@ DATABASE_PATH=/data/pro_clubs.db
 
 Without a persistent volume, Railway may remove the database during a redeploy. Updating/syncing slash commands does not itself remove teams, and `/team remove` is the only bot command that deletes a configured team.
 
-If `DATABASE_PATH` is not set on Railway, the bot now automatically uses `/data/pro_clubs.db`. A volume must still be mounted at `/data`; code cannot preserve files that Railway deletes from an unmounted container.
+On Railway, the bot forces `/data/pro_clubs.db` if `DATABASE_PATH` is missing or points outside `/data`. A volume must still be mounted at `/data`; code cannot preserve files that Railway deletes from an unmounted container.
 
 ## Notes
 
