@@ -112,7 +112,8 @@ class Database:
                 CREATE TABLE IF NOT EXISTS budget_config (
                     guild_id INTEGER PRIMARY KEY,
                     channel_id INTEGER NOT NULL,
-                    message_id INTEGER
+                    message_id INTEGER,
+                    starting_budget INTEGER NOT NULL DEFAULT 0
                 );
 
                 CREATE TABLE IF NOT EXISTS team_budgets (
@@ -144,6 +145,29 @@ class Database:
                     started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     ended_at TEXT
                 );
+
+                CREATE TABLE IF NOT EXISTS poll_config (
+                    guild_id INTEGER PRIMARY KEY,
+                    ping_role_id INTEGER NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS staff_application_config (
+                    guild_id INTEGER PRIMARY KEY,
+                    panel_channel_id INTEGER NOT NULL,
+                    category_id INTEGER NOT NULL,
+                    reviewer_role_id INTEGER NOT NULL,
+                    positions TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS staff_applications (
+                    channel_id INTEGER PRIMARY KEY,
+                    guild_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    position TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'open',
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    closed_at TEXT
+                );
                 """
             )
 
@@ -162,6 +186,10 @@ class Database:
             ):
                 if column not in team_columns:
                     db.execute(f"ALTER TABLE teams ADD COLUMN {column} {kind}")
+
+            budget_columns = {row["name"] for row in db.execute("PRAGMA table_info(budget_config)")}
+            if "starting_budget" not in budget_columns:
+                db.execute("ALTER TABLE budget_config ADD COLUMN starting_budget INTEGER NOT NULL DEFAULT 0")
 
             db.execute(
                 """
@@ -506,15 +534,19 @@ class Database:
                 )
             )
 
-    def configure_budget_channel(self, guild_id: int, channel_id: int) -> None:
+    def configure_budget_channel(self, guild_id: int, channel_id: int, starting_budget: int) -> None:
         with self.connect() as db:
             db.execute(
                 """
-                INSERT INTO budget_config (guild_id, channel_id) VALUES (?, ?)
-                ON CONFLICT(guild_id) DO UPDATE SET channel_id = excluded.channel_id
+                INSERT INTO budget_config (guild_id, channel_id, starting_budget) VALUES (?, ?, ?)
+                ON CONFLICT(guild_id) DO UPDATE SET
+                    channel_id = excluded.channel_id,
+                    starting_budget = excluded.starting_budget
                 """,
-                (guild_id, channel_id),
+                (guild_id, channel_id, starting_budget),
             )
+            for team in db.execute("SELECT name FROM teams WHERE guild_id = ?", (guild_id,)):
+                self._upsert_budget(db, guild_id, team["name"], starting_budget)
 
     def budget_config(self, guild_id: int) -> sqlite3.Row | None:
         with self.connect() as db:
@@ -619,6 +651,82 @@ class Database:
                 "SELECT * FROM loans WHERE guild_id = ? AND player_id = ? AND status = 'active' ORDER BY id DESC LIMIT 1",
                 (guild_id, player_id),
             ).fetchone()
+
+    def active_loans(self, guild_id: int) -> list[sqlite3.Row]:
+        with self.connect() as db:
+            return list(db.execute(
+                "SELECT * FROM loans WHERE guild_id = ? AND status = 'active' ORDER BY started_at",
+                (guild_id,),
+            ))
+
+    def configure_poll_role(self, guild_id: int, role_id: int) -> None:
+        with self.connect() as db:
+            db.execute(
+                """
+                INSERT INTO poll_config (guild_id, ping_role_id) VALUES (?, ?)
+                ON CONFLICT(guild_id) DO UPDATE SET ping_role_id = excluded.ping_role_id
+                """,
+                (guild_id, role_id),
+            )
+
+    def poll_config(self, guild_id: int) -> sqlite3.Row | None:
+        with self.connect() as db:
+            return db.execute("SELECT * FROM poll_config WHERE guild_id = ?", (guild_id,)).fetchone()
+
+    def configure_staff_applications(
+        self, guild_id: int, panel_channel_id: int, category_id: int,
+        reviewer_role_id: int, positions: str,
+    ) -> None:
+        with self.connect() as db:
+            db.execute(
+                """
+                INSERT INTO staff_application_config
+                    (guild_id, panel_channel_id, category_id, reviewer_role_id, positions)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(guild_id) DO UPDATE SET
+                    panel_channel_id = excluded.panel_channel_id,
+                    category_id = excluded.category_id,
+                    reviewer_role_id = excluded.reviewer_role_id,
+                    positions = excluded.positions
+                """,
+                (guild_id, panel_channel_id, category_id, reviewer_role_id, positions),
+            )
+
+    def staff_application_config(self, guild_id: int) -> sqlite3.Row | None:
+        with self.connect() as db:
+            return db.execute(
+                "SELECT * FROM staff_application_config WHERE guild_id = ?", (guild_id,)
+            ).fetchone()
+
+    def open_staff_application(self, guild_id: int, user_id: int) -> sqlite3.Row | None:
+        with self.connect() as db:
+            return db.execute(
+                "SELECT * FROM staff_applications WHERE guild_id = ? AND user_id = ? AND status = 'open'",
+                (guild_id, user_id),
+            ).fetchone()
+
+    def create_staff_application(
+        self, channel_id: int, guild_id: int, user_id: int, position: str,
+    ) -> None:
+        with self.connect() as db:
+            db.execute(
+                "INSERT INTO staff_applications (channel_id, guild_id, user_id, position) VALUES (?, ?, ?, ?)",
+                (channel_id, guild_id, user_id, position),
+            )
+
+    def staff_application(self, channel_id: int) -> sqlite3.Row | None:
+        with self.connect() as db:
+            return db.execute(
+                "SELECT * FROM staff_applications WHERE channel_id = ?", (channel_id,)
+            ).fetchone()
+
+    def close_staff_application(self, channel_id: int) -> bool:
+        with self.connect() as db:
+            cursor = db.execute(
+                "UPDATE staff_applications SET status = 'closed', closed_at = CURRENT_TIMESTAMP WHERE channel_id = ? AND status = 'open'",
+                (channel_id,),
+            )
+            return cursor.rowcount > 0
 
     def finish_loan(self, guild_id: int, player_id: int) -> sqlite3.Row | None:
         with self.connect() as db:
