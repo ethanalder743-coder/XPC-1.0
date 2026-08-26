@@ -327,11 +327,38 @@ class ClubManagement(commands.Cog):
         config = self.db.config(interaction.guild.id)
         channel = interaction.guild.get_channel(config["release_channel_id"]) if config else None
         if isinstance(channel, discord.TextChannel):
-            await channel.send(embed=discord.Embed(
+            roster = get_player_roster(self.db, interaction.guild, role, record["name"])
+            roster_cap = record["roster_cap"] if record else 22
+            embed = discord.Embed(
                 title="Player Released",
-                description=f"{player.mention} has been released from {role.mention}.\n**Reason:** {reason}",
-                color=discord.Color.orange(),
-            ))
+                description=(
+                    f"{player.mention}\n"
+                    f"**{player.display_name}** has been released from {role.mention}"
+                ),
+                color=role.color if role.color.value else discord.Color.red(),
+            )
+            embed.add_field(
+                name="• 📋 Roster Cap",
+                value=f"**{len(roster)}/{roster_cap}**",
+                inline=False,
+            )
+            embed.add_field(
+                name="• 🛡️ Actioned By",
+                value=interaction.user.mention,
+                inline=False,
+            )
+            if reason != "No reason provided":
+                embed.add_field(name="• 📝 Reason", value=reason, inline=False)
+            if record["logo_url"]:
+                embed.set_thumbnail(url=record["logo_url"])
+                embed.set_author(
+                    name=f"XPC | {record['name'].upper()} | FC26",
+                    icon_url=record["logo_url"],
+                )
+            else:
+                embed.set_author(name=f"XPC | {record['name'].upper()} | FC26")
+            embed.set_footer(text="XPC BOT • Pro Clubs Management")
+            await channel.send(embed=embed)
 
     team_group = app_commands.Group(name="team", description="Configure club teams", guild_only=True)
 
