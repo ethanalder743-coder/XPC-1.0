@@ -502,6 +502,21 @@ class ClubManagement(commands.Cog):
         self.bot = bot
         self.db = database
 
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        command_name = interaction.command.qualified_name if interaction.command else "unknown"
+        self.db.add_audit(
+            interaction.guild_id,
+            interaction.user.id,
+            f"/{command_name}",
+            f"Channel {interaction.channel_id or 'DM'}",
+        )
+        if interaction.guild_id and not self.db.command_enabled(interaction.guild_id, command_name):
+            await interaction.response.send_message(
+                "That command is currently disabled by the bot dashboard.", ephemeral=True
+            )
+            return False
+        return True
+
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member) -> None:
         config = self.db.welcome_config(member.guild.id)
