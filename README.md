@@ -48,6 +48,17 @@ This project is inspired only by common club-management workflows. It does not c
 - `/poll` creates a native Discord poll with custom choices.
 - `/staffapplicationsetup` posts a position selector that opens private application channels.
 
+### League administration
+
+- `/franchiseconfig` sets the franchise-owner Discord role and `/appointfranchiseowner` assigns it.
+- `/blacklist`, `/removeblacklist`, and `/blacklistlist` manage blocked players.
+- `/openwindow` and `/closewindow` control ordinary offers, transfers, and loans.
+- `/myoffers`, `/teamoffers`, and `/canceloffer` manage pending offers.
+- `/promote`, `/demoteco`, `/forcepromote`, and `/forcedemote` manage staff roles.
+- `/result` records scores and `/standings` calculates the 3/1/0 league table.
+- `/editteam` and `/transferownership` update persistent team details.
+- `/debug`, `/logstyle`, `/help`, and `/endseason` provide league administration tools.
+
 Transfer and loan commands are restricted to administrators and the roles configured with `/forceconfig`.
 
 - Python 3.11 or newer
