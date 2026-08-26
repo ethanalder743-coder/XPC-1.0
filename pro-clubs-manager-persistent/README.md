@@ -31,6 +31,17 @@ This project is inspired only by common club-management workflows. It does not c
 
 ## Requirements
 
+### Transfers, loans, and budgets
+
+- `/budgetsetup` sets the channel containing the live plain-text budget list.
+- `/setbudget` sets a configured team's budget in millions.
+- `/budgets` manually refreshes the budget message.
+- `/transfer` moves a player between teams, moves the fee between budgets, and refreshes the list.
+- `/loan` temporarily moves a player to another team.
+- `/endloan` returns a loaned player to their parent team.
+
+Transfer and loan commands are restricted to administrators and the roles configured with `/forceconfig`.
+
 - Python 3.11 or newer
 - A Discord bot application
 - Permission to manage roles, send messages, embed links, and use application commands
@@ -113,3 +124,4 @@ On Railway, the bot forces `/data/pro_clubs.db` if `DATABASE_PATH` is missing or
 - Deleting a team configuration does not delete its Discord role.
 - The bot intentionally keeps permissions simple: administrators configure it, and members with Manage Roles make offers/releases.
 - Back up `pro_clubs.db` if you want to preserve data when moving hosts.
+
