@@ -397,7 +397,15 @@ class ClubManagement(commands.Cog):
     async def send_welcome_card(
         self, member: discord.Member, channel: discord.TextChannel, config
     ) -> bool:
-        headline = f"{member.display_name} has landed."
+        replacements = {
+            "{user}": member.name,
+            "{display}": member.display_name,
+            "{server}": member.guild.name,
+            "{count}": str(member.guild.member_count or 0),
+        }
+        headline = config["headline"] or "{display} has landed."
+        for placeholder, value in replacements.items():
+            headline = headline.replace(placeholder, value)
         try:
             avatar_bytes = await member.display_avatar.with_size(256).read()
             card = await asyncio.to_thread(
@@ -1139,12 +1147,14 @@ class ClubManagement(commands.Cog):
     @app_commands.describe(
         channel="Channel where welcome cards are posted",
         banner="Your wide welcome background image",
+        headline="Large banner text; supports {user}, {display}, {server}, and {count}",
     )
     async def welcomesetup(
         self,
         interaction: discord.Interaction,
         channel: discord.TextChannel,
         banner: discord.Attachment,
+        headline: str = "{display} has landed.",
     ):
         if banner.content_type and not banner.content_type.startswith("image/"):
             await interaction.response.send_message("The banner must be an image file.", ephemeral=True)
@@ -1163,11 +1173,12 @@ class ClubManagement(commands.Cog):
             interaction.guild_id,
             channel.id,
             str(banner_path),
-            "{display} has landed.",
+            headline[:100],
             "",
         )
         await interaction.followup.send(
-            f"Welcome system configured for {channel.mention}.",
+            f"Welcome system configured for {channel.mention}.\n"
+            "Headline placeholders: `{user}`, `{display}`, `{server}`, `{count}`.",
             ephemeral=True,
         )
 
