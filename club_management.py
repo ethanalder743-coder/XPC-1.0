@@ -2,10 +2,12 @@ import asyncio
 import io
 import re
 import sqlite3
+from pathlib import Path
 
 import discord
 from discord import app_commands
 from discord.ext import commands
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 from database import Database
 
@@ -29,6 +31,62 @@ def roster_text(roster: list[discord.Member]) -> str:
 
 def inline_team_logo(team) -> str:
     return f"<:clublogo:{team['emoji_id']}> " if team and team["emoji_id"] else ""
+
+
+def _font(size: int, bold: bool = False):
+    names = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold
+        else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "C:/Windows/Fonts/arialbd.ttf" if bold else "C:/Windows/Fonts/arial.ttf",
+    ]
+    for name in names:
+        if Path(name).exists():
+            return ImageFont.truetype(name, size)
+    return ImageFont.load_default()
+
+
+def render_welcome_card(
+    banner_path: str, avatar_bytes: bytes, headline: str, subtext: str
+) -> io.BytesIO:
+    width, height = 1100, 500
+    with Image.open(banner_path) as source:
+        background = ImageOps.fit(source.convert("RGB"), (width, height), Image.Resampling.LANCZOS)
+    card = background.convert("RGBA")
+    card.alpha_composite(Image.new("RGBA", card.size, (8, 10, 18, 105)))
+
+    with Image.open(io.BytesIO(avatar_bytes)) as avatar_source:
+        avatar = ImageOps.fit(
+            avatar_source.convert("RGBA"), (190, 190), Image.Resampling.LANCZOS
+        )
+    mask = Image.new("L", avatar.size, 0)
+    ImageDraw.Draw(mask).ellipse((0, 0, 189, 189), fill=255)
+    avatar.putalpha(mask)
+    border = Image.new("RGBA", (206, 206), (0, 0, 0, 0))
+    ImageDraw.Draw(border).ellipse((0, 0, 205, 205), fill=(255, 255, 255, 245))
+    border.alpha_composite(avatar, (8, 8))
+    card.alpha_composite(border, ((width - 206) // 2, 54))
+
+    draw = ImageDraw.Draw(card)
+    headline_font = _font(48, bold=True)
+    while draw.textbbox((0, 0), headline, font=headline_font)[2] > width - 80 and headline_font.size > 24:
+        headline_font = _font(headline_font.size - 2, bold=True)
+    subtext_font = _font(29)
+    headline_box = draw.textbbox((0, 0), headline, font=headline_font, stroke_width=2)
+    headline_x = (width - (headline_box[2] - headline_box[0])) // 2
+    draw.text(
+        (headline_x, 295), headline, font=headline_font, fill="white",
+        stroke_width=2, stroke_fill=(0, 0, 0, 180),
+    )
+    subtext_box = draw.textbbox((0, 0), subtext, font=subtext_font, stroke_width=1)
+    subtext_x = (width - (subtext_box[2] - subtext_box[0])) // 2
+    draw.text(
+        (subtext_x, 370), subtext, font=subtext_font, fill=(220, 225, 235),
+        stroke_width=1, stroke_fill=(0, 0, 0, 170),
+    )
+    output = io.BytesIO()
+    card.convert("RGB").save(output, format="PNG", optimize=True)
+    output.seek(0)
+    return output
 
 
 class OfferView(discord.ui.View):
@@ -326,6 +384,41 @@ class ClubManagement(commands.Cog):
     def __init__(self, bot: commands.Bot, database: Database) -> None:
         self.bot = bot
         self.db = database
+
+    @commands.Cog.listener()
+    async def on_member_join(self, member: discord.Member) -> None:
+        config = self.db.welcome_config(member.guild.id)
+        if not config:
+            return
+        channel = member.guild.get_channel(config["channel_id"])
+        if not isinstance(channel, discord.TextChannel) or not Path(config["banner_path"]).exists():
+            return
+        replacements = {
+            "{user}": member.name,
+            "{server}": member.guild.name,
+            "{count}": str(member.guild.member_count or 0),
+        }
+        headline = config["headline"]
+        subtext = config["subtext"]
+        for placeholder, value in replacements.items():
+            headline = headline.replace(placeholder, value)
+            subtext = subtext.replace(placeholder, value)
+        try:
+            avatar_bytes = await member.display_avatar.with_size(256).read()
+            card = await asyncio.to_thread(
+                render_welcome_card,
+                config["banner_path"],
+                avatar_bytes,
+                headline,
+                subtext,
+            )
+            await channel.send(
+                content=f"Hey {member.mention}, welcome to **{member.guild.name}**!",
+                file=discord.File(card, filename="welcome.png"),
+                allowed_mentions=discord.AllowedMentions(users=True),
+            )
+        except (discord.HTTPException, OSError):
+            return
 
     async def team_autocomplete(self, interaction: discord.Interaction, current: str):
         if interaction.guild_id is None:
@@ -900,6 +993,49 @@ class ClubManagement(commands.Cog):
 
         await interaction.followup.send(
             f"Rules cards posted in {channel.mention}.", ephemeral=True
+        )
+
+    @app_commands.command(name="welcomesetup", description="Configure a custom welcome image")
+    @app_commands.guild_only()
+    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.describe(
+        channel="Channel where welcome cards are posted",
+        banner="Your wide welcome background image",
+        headline="Large text; supports {user}, {server}, and {count}",
+        subtext="Smaller text; supports {user}, {server}, and {count}",
+    )
+    async def welcomesetup(
+        self,
+        interaction: discord.Interaction,
+        channel: discord.TextChannel,
+        banner: discord.Attachment,
+        headline: str = "{user} just joined {server}!",
+        subtext: str = "Member #{count} - Welcome to the community",
+    ):
+        if banner.content_type and not banner.content_type.startswith("image/"):
+            await interaction.response.send_message("The banner must be an image file.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        suffix = Path(banner.filename).suffix.lower() or ".png"
+        banner_path = self.db.path.parent / f"welcome_banner_{interaction.guild_id}{suffix}"
+        banner_bytes = await banner.read()
+        try:
+            await asyncio.to_thread(banner_path.write_bytes, banner_bytes)
+            await asyncio.to_thread(lambda: Image.open(banner_path).verify())
+        except (OSError, ValueError):
+            await interaction.followup.send("Discord could not process that banner image.", ephemeral=True)
+            return
+        self.db.configure_welcome(
+            interaction.guild_id,
+            channel.id,
+            str(banner_path),
+            headline[:250],
+            subtext[:250],
+        )
+        await interaction.followup.send(
+            f"Welcome system configured for {channel.mention}.\n"
+            "Available text placeholders: `{user}`, `{server}`, `{count}`.",
+            ephemeral=True,
         )
 
     @app_commands.command(name="ticketsetup", description="Create and configure the support ticket panel")
