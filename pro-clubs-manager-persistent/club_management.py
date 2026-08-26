@@ -105,7 +105,7 @@ class OfferView(discord.ui.View):
         team = self.db.team(offer["guild_id"], offer["team_name"]) if offer else None
         accepted = result == "accepted"
         embed = discord.Embed(
-            title="✅ OFFER ACCEPTED" if accepted else "❌ OFFER DECLINED",
+            title="OFFER ACCEPTED" if accepted else "OFFER DECLINED",
             description=(
                 f"Welcome to **{offer['team_name']}**! Your team role has been added successfully."
                 if accepted else f"You declined the offer from **{offer['team_name']}**."
@@ -113,21 +113,21 @@ class OfferView(discord.ui.View):
             color=(role.color if role and role.color.value else
                    (discord.Color.green() if accepted else discord.Color.red())),
         )
-        embed.add_field(name="👤 Player", value=f"<@{offer['player_id']}>", inline=True)
-        embed.add_field(name="🛡️ Team", value=role.mention if role else offer["team_name"], inline=True)
-        embed.add_field(name="📨 Offered by", value=f"<@{offer['offered_by']}>", inline=True)
+        embed.add_field(name="Player", value=f"<@{offer['player_id']}>", inline=True)
+        embed.add_field(name="Team", value=role.mention if role else offer["team_name"], inline=True)
+        embed.add_field(name="Offered by", value=f"<@{offer['offered_by']}>", inline=True)
         if team and team["owner_id"]:
-            embed.add_field(name="👑 Club owner", value=f"<@{team['owner_id']}>", inline=True)
+            embed.add_field(name="Club owner", value=f"<@{team['owner_id']}>", inline=True)
         if accepted and guild and role:
             roster = get_player_roster(self.db, guild, role, offer["team_name"])
             embed.add_field(
-                name=f"📋 Player roster ({len(roster)})",
+                name=f"Player roster ({len(roster)})",
                 value=roster_text(roster),
                 inline=False,
             )
         if team and team["logo_url"]:
             embed.set_thumbnail(url=team["logo_url"])
-        embed.set_footer(text=f"Offer #{self.offer_id} • Decision confirmed")
+        embed.set_footer(text=f"Offer #{self.offer_id} - Decision confirmed")
         if interaction.message:
             await interaction.message.edit(embed=embed, view=self)
 
@@ -144,13 +144,13 @@ class OfferView(discord.ui.View):
             embed = discord.Embed(
                 title="PLAYER SIGNED",
                 description=(
-                    f"### {member.mention}  •  {member.display_name}\n"
+                    f"### {member.mention} - {member.display_name}\n"
                     f"has signed with {role.mention}\n\n"
                     "━━━━━━━━━━━━━━━━━━━━\n"
-                    f"- 🛡️ **TEAM** — {role.mention}\n"
-                    f"- 👑 **TEAM OWNER** — {owner_text}\n"
-                    f"- 🤝 **SIGNED BY** — <@{offer['offered_by']}>\n"
-                    f"- 📋 **ROSTER CAP** — `{len(roster):02d} / {roster_cap:02d}` players signed"
+                    f"- **TEAM** — {role.mention}\n"
+                    f"- **TEAM OWNER** — {owner_text}\n"
+                    f"- **SIGNED BY** — <@{offer['offered_by']}>\n"
+                    f"- **ROSTER CAP** — `{len(roster):02d} / {roster_cap:02d}` players signed"
                 ),
                 color=role.color if role.color.value else discord.Color.blurple(),
                 timestamp=discord.utils.utcnow(),
@@ -337,12 +337,12 @@ class ClubManagement(commands.Cog):
             embed = discord.Embed(
                 title="PLAYER RELEASED",
                 description=(
-                    f"### {player.mention}  •  {player.display_name}\n"
+                    f"### {player.mention} - {player.display_name}\n"
                     f"was released by {role.mention}\n\n"
                     "━━━━━━━━━━━━━━━━━━━━\n"
-                    f"- 🛡️ **TEAM** — {role.mention}\n"
-                    f"- 👑 **TEAM OWNER** — {owner_text}\n"
-                    f"- 📋 **ROSTER CAP** — `{len(roster):02d} / {roster_cap:02d}` players signed"
+                    f"- **TEAM** — {role.mention}\n"
+                    f"- **TEAM OWNER** — {owner_text}\n"
+                    f"- **ROSTER CAP** — `{len(roster):02d} / {roster_cap:02d}` players signed"
                     f"{reason_text}"
                 ),
                 color=discord.Color.red(),
@@ -450,7 +450,7 @@ class ClubManagement(commands.Cog):
     @team_group.command(name="list", description="List configured teams")
     async def team_list(self, interaction: discord.Interaction):
         teams = self.db.teams(interaction.guild_id)
-        text = "\n".join(f"• **{row['name']}** — <@&{row['role_id']}>" for row in teams)
+        text = "\n".join(f"- **{row['name']}** — <@&{row['role_id']}>" for row in teams)
         await interaction.response.send_message(text or "No teams are configured yet.", ephemeral=True)
 
     @app_commands.command(name="config_setup", description="Set log channels and the two management roles")
