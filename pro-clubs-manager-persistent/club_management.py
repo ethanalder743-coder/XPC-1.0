@@ -2,6 +2,7 @@ import asyncio
 import io
 import re
 import sqlite3
+from datetime import timedelta
 from pathlib import Path
 from typing import Literal
 
@@ -377,6 +378,114 @@ class TicketPanelView(discord.ui.View):
     def __init__(self, bot: commands.Bot, database: Database, problems: list[str]) -> None:
         super().__init__(timeout=None)
         self.add_item(TicketProblemSelect(bot, database, problems))
+
+
+class StaffApplicationCloseView(discord.ui.View):
+    def __init__(self, database: Database) -> None:
+        super().__init__(timeout=None)
+        self.db = database
+
+    @discord.ui.button(label="Close Application", style=discord.ButtonStyle.danger, custom_id="xpc_staff:close")
+    async def close_application(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.guild is None or not isinstance(interaction.channel, discord.TextChannel):
+            return
+        application = self.db.staff_application(interaction.channel.id)
+        config = self.db.staff_application_config(interaction.guild.id)
+        allowed = isinstance(interaction.user, discord.Member) and (
+            interaction.user.guild_permissions.administrator
+            or (config and any(role.id == config["reviewer_role_id"] for role in interaction.user.roles))
+        )
+        if not allowed:
+            await interaction.response.send_message("Only the application review team can close this.", ephemeral=True)
+            return
+        if not application or not self.db.close_staff_application(interaction.channel.id):
+            await interaction.response.send_message("This application is already closed.", ephemeral=True)
+            return
+        button.disabled = True
+        await interaction.response.edit_message(view=self)
+        await interaction.channel.send("Application closed. This channel will be deleted in 10 seconds.")
+        await asyncio.sleep(10)
+        try:
+            await interaction.channel.delete(reason=f"Staff application closed by {interaction.user}")
+        except discord.NotFound:
+            pass
+
+
+class StaffPositionSelect(discord.ui.Select):
+    def __init__(self, database: Database, positions: list[str]) -> None:
+        self.db = database
+        super().__init__(
+            placeholder="Choose the staff position",
+            min_values=1,
+            max_values=1,
+            options=[discord.SelectOption(label=item[:100], value=item[:100]) for item in positions[:25]]
+            or [discord.SelectOption(label="Staff", value="Staff")],
+            custom_id="xpc_staff:position",
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+            return
+        await interaction.response.defer(ephemeral=True)
+        config = self.db.staff_application_config(interaction.guild.id)
+        if not config:
+            await interaction.followup.send("Staff applications are not configured.", ephemeral=True)
+            return
+        existing = self.db.open_staff_application(interaction.guild.id, interaction.user.id)
+        if existing:
+            existing_channel = interaction.guild.get_channel(existing["channel_id"])
+            if existing_channel:
+                await interaction.followup.send(f"You already have an application: {existing_channel.mention}", ephemeral=True)
+                return
+            self.db.close_staff_application(existing["channel_id"])
+        category = interaction.guild.get_channel(config["category_id"])
+        reviewer_role = interaction.guild.get_role(config["reviewer_role_id"])
+        if not isinstance(category, discord.CategoryChannel) or reviewer_role is None:
+            await interaction.followup.send("The application category or reviewer role no longer exists.", ephemeral=True)
+            return
+        overwrites = {
+            interaction.guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, attach_files=True),
+            reviewer_role: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
+            interaction.guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True),
+        }
+        safe_user = re.sub(r"[^a-z0-9-]", "-", interaction.user.name.lower()).strip("-")
+        channel = await interaction.guild.create_text_channel(
+            name=f"application-{safe_user or interaction.user.id}"[:100],
+            category=category,
+            overwrites=overwrites,
+            reason=f"Staff application opened by {interaction.user}",
+        )
+        position = self.values[0]
+        self.db.create_staff_application(channel.id, interaction.guild.id, interaction.user.id, position)
+        embed = discord.Embed(
+            title=f"{position} Application",
+            description=(
+                f"{interaction.user.mention}, please answer these questions clearly:\n\n"
+                "1. What is your age?\n"
+                "2. What timezone are you in?\n"
+                "3. Why do you want this staff position?\n"
+                "4. What experience do you have?\n"
+                "5. How active can you be?\n"
+                "6. What would make you a good member of staff?"
+            ),
+            color=discord.Color.blurple(),
+            timestamp=discord.utils.utcnow(),
+        )
+        embed.set_footer(text="Made By EthanCoys")
+        await channel.send(
+            content=f"{interaction.user.mention} {reviewer_role.mention}",
+            embed=embed,
+            view=StaffApplicationCloseView(self.db),
+            allowed_mentions=discord.AllowedMentions(users=True, roles=True),
+        )
+        await interaction.followup.send(f"Your application is ready: {channel.mention}", ephemeral=True)
+
+
+class StaffApplicationPanelView(discord.ui.View):
+    def __init__(self, database: Database, positions: list[str]) -> None:
+        super().__init__(timeout=None)
+        self.add_item(StaffPositionSelect(database, positions))
 
 
 class ClubManagement(commands.Cog):
@@ -965,13 +1074,17 @@ class ClubManagement(commands.Cog):
     @app_commands.command(name="budgetsetup", description="Set the channel for the live team budget list")
     @app_commands.guild_only()
     @app_commands.checks.has_permissions(administrator=True)
-    async def budgetsetup(self, interaction: discord.Interaction, channel: discord.TextChannel):
+    async def budgetsetup(
+        self, interaction: discord.Interaction, channel: discord.TextChannel,
+        starting_budget: app_commands.Range[int, 0, 1000000],
+    ):
         assert interaction.guild
         await interaction.response.defer(ephemeral=True)
-        self.db.configure_budget_channel(interaction.guild.id, channel.id)
+        self.db.configure_budget_channel(interaction.guild.id, channel.id, starting_budget)
         await self.refresh_budget_message(interaction.guild)
         await interaction.followup.send(
-            f"The live budget list is now in {channel.mention}.", ephemeral=True
+            f"The live budget list is now in {channel.mention}. Every configured team starts with **{starting_budget}M**.",
+            ephemeral=True,
         )
 
     @app_commands.command(name="setbudget", description="Set a configured team's budget in millions")
@@ -1114,6 +1227,71 @@ class ClubManagement(commands.Cog):
         self.db.finish_loan(interaction.guild.id, player.id)
         await interaction.followup.send(
             f"Loan ended. {player.mention} returned to {parent_role.mention}.", ephemeral=True
+        )
+
+    @app_commands.command(name="loans", description="Show every active player loan")
+    @app_commands.guild_only()
+    async def loans(self, interaction: discord.Interaction):
+        rows = self.db.active_loans(interaction.guild_id)
+        if not rows:
+            await interaction.response.send_message("There are no active loans.")
+            return
+        lines = []
+        for loan in rows:
+            parent = self.db.team(interaction.guild_id, loan["parent_team"])
+            destination = self.db.team(interaction.guild_id, loan["loan_team"])
+            parent_text = f"<@&{parent['role_id']}>" if parent else loan["parent_team"]
+            destination_text = f"<@&{destination['role_id']}>" if destination else loan["loan_team"]
+            lines.append(f"<@{loan['player_id']}> — {parent_text} → {destination_text}")
+        embed = discord.Embed(
+            title="ACTIVE LOANS",
+            description="\n".join(lines),
+            color=discord.Color.blurple(),
+            timestamp=discord.utils.utcnow(),
+        )
+        embed.set_footer(text="Made By EthanCoys")
+        await interaction.response.send_message(embed=embed)
+
+    @app_commands.command(name="pollconfig", description="Set the role pinged for custom polls")
+    @app_commands.guild_only()
+    @app_commands.checks.has_permissions(administrator=True)
+    async def pollconfig(self, interaction: discord.Interaction, ping_role: discord.Role):
+        self.db.configure_poll_role(interaction.guild_id, ping_role.id)
+        await interaction.response.send_message(
+            f"Custom polls will ping {ping_role.mention}.", ephemeral=True
+        )
+
+    @app_commands.command(name="poll", description="Create a custom poll and ping the configured role")
+    @app_commands.guild_only()
+    async def poll(
+        self, interaction: discord.Interaction, question: str,
+        option_1: str, option_2: str,
+        option_3: str | None = None, option_4: str | None = None,
+        duration_hours: app_commands.Range[int, 1, 168] = 24,
+        allow_multiple: bool = False,
+    ):
+        if not await self.require_force_access(interaction):
+            return
+        config = self.db.poll_config(interaction.guild_id)
+        if not config:
+            await interaction.response.send_message("Run /pollconfig first.", ephemeral=True)
+            return
+        role = interaction.guild.get_role(config["ping_role_id"])
+        if role is None:
+            await interaction.response.send_message("The configured poll role no longer exists.", ephemeral=True)
+            return
+        poll = discord.Poll(
+            question=question[:300],
+            duration=timedelta(hours=duration_hours),
+            multiple=allow_multiple,
+        )
+        for answer in (option_1, option_2, option_3, option_4):
+            if answer:
+                poll.add_answer(text=answer[:55])
+        await interaction.response.send_message(
+            content=role.mention,
+            poll=poll,
+            allowed_mentions=discord.AllowedMentions(roles=True),
         )
 
     team_group = app_commands.Group(name="team", description="Configure club teams", guild_only=True)
@@ -1393,6 +1571,54 @@ class ClubManagement(commands.Cog):
             ephemeral=True,
         )
 
+    @app_commands.command(name="staffapplicationsetup", description="Create the staff application panel")
+    @app_commands.guild_only()
+    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.describe(
+        panel_channel="Channel where members open applications",
+        application_category="Category where private applications are created",
+        reviewer_role="Staff role that reviews applications and gets pinged",
+        positions="Staff positions separated by commas",
+    )
+    async def staffapplicationsetup(
+        self, interaction: discord.Interaction,
+        panel_channel: discord.TextChannel,
+        application_category: discord.CategoryChannel,
+        reviewer_role: discord.Role,
+        positions: str,
+    ):
+        position_list = [item.strip() for item in positions.split(",") if item.strip()]
+        if not position_list:
+            await interaction.response.send_message("Add at least one staff position.", ephemeral=True)
+            return
+        if len(position_list) > 25:
+            await interaction.response.send_message("You can configure up to 25 positions.", ephemeral=True)
+            return
+        self.db.configure_staff_applications(
+            interaction.guild_id, panel_channel.id, application_category.id,
+            reviewer_role.id, "\n".join(position_list),
+        )
+        embed = discord.Embed(
+            title="STAFF APPLICATIONS",
+            description=(
+                "Select the position you want to apply for below.\n\n"
+                "A private application channel will be created for you and the review team."
+            ),
+            color=discord.Color.blurple(),
+            timestamp=discord.utils.utcnow(),
+        )
+        if interaction.guild.icon:
+            embed.set_thumbnail(url=interaction.guild.icon.url)
+        embed.set_footer(text="Made By EthanCoys")
+        await panel_channel.send(
+            embed=embed,
+            view=StaffApplicationPanelView(self.db, position_list),
+        )
+        await interaction.response.send_message(
+            f"Staff application panel posted in {panel_channel.mention}. {reviewer_role.mention} will review applications.",
+            ephemeral=True,
+        )
+
     @app_commands.command(name="ticketsetup", description="Create and configure the support ticket panel")
     @app_commands.guild_only()
     @app_commands.checks.has_permissions(administrator=True)
@@ -1451,4 +1677,6 @@ async def setup(bot: commands.Bot, database: Database) -> None:
     await bot.add_cog(ClubManagement(bot, database))
     bot.add_view(TicketPanelView(bot, database, ["General Support"]))
     bot.add_view(TicketCloseView(database))
+    bot.add_view(StaffApplicationPanelView(database, ["Staff"]))
+    bot.add_view(StaffApplicationCloseView(database))
 
