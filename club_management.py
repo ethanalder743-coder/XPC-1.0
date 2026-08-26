@@ -138,28 +138,41 @@ class OfferView(discord.ui.View):
         channel = guild.get_channel(config["signing_channel_id"])
         if isinstance(channel, discord.TextChannel):
             roster = get_player_roster(self.db, guild, role, offer["team_name"])
+            team = self.db.team(offer["guild_id"], offer["team_name"])
+            roster_cap = team["roster_cap"] if team else 22
             embed = discord.Embed(
-                title="✍️  TRANSFER CONFIRMED",
+                title="✅  OFFER ACCEPTED",
                 description=(
-                    f"## Welcome to {offer['team_name']}\n"
-                    f"{member.mention} has officially joined {role.mention}."
+                    f"### {member.mention} has officially signed with {role.mention}\n"
+                    "━━━━━━━━━━━━━━━━━━━━"
                 ),
                 color=role.color if role.color.value else discord.Color.blurple(),
             )
-            embed.add_field(name="👤  PLAYER", value=member.mention, inline=True)
-            embed.add_field(name="🛡️  CLUB", value=role.mention, inline=True)
-            team = self.db.team(offer["guild_id"], offer["team_name"])
-            embed.add_field(name="🤝  SIGNED BY", value=f"<@{offer['offered_by']}>", inline=True)
             if team and team["owner_id"]:
-                embed.add_field(name="👑  CLUB OWNER", value=f"<@{team['owner_id']}>", inline=True)
+                embed.add_field(
+                    name="👑  FRANCHISE OWNER",
+                    value=f"<@{team['owner_id']}>",
+                    inline=True,
+                )
             embed.add_field(
-                name=f"📋  SQUAD • {len(roster)} PLAYER{'S' if len(roster) != 1 else ''}",
+                name="🤝  SIGNED BY",
+                value=f"<@{offer['offered_by']}>",
+                inline=True,
+            )
+            embed.add_field(
+                name="📋  ROSTER CAP",
+                value=f"**{len(roster)} / {roster_cap}**",
+                inline=False,
+            )
+            embed.add_field(
+                name="⚽  CURRENT SQUAD",
                 value=roster_text(roster),
                 inline=False,
             )
             if team and team["logo_url"]:
                 embed.set_thumbnail(url=team["logo_url"])
-            embed.set_footer(text=f"XPC Transfers  •  Offer #{self.offer_id}")
+            embed.set_author(name=f"XPC TRANSFERS  •  {offer['team_name'].upper()}")
+            embed.set_footer(text=f"XPC Club Management  •  Offer #{self.offer_id}")
             await channel.send(embed=embed)
 
 
@@ -338,6 +351,7 @@ class ClubManagement(commands.Cog):
         role: discord.Role,
         owner: discord.Member,
         logo: discord.Attachment | None = None,
+        roster_cap: app_commands.Range[int, 1, 99] = 22,
     ):
         if role.is_default() or role.managed:
             await interaction.response.send_message("Choose a normal assignable team role.", ephemeral=True)
@@ -352,6 +366,7 @@ class ClubManagement(commands.Cog):
                 role.id,
                 owner.id,
                 logo.url if logo else None,
+                roster_cap,
             )
         except sqlite3.IntegrityError:
             await interaction.response.send_message("That team name or role is already configured.", ephemeral=True)
@@ -369,6 +384,7 @@ class ClubManagement(commands.Cog):
         )
         embed.add_field(name="Role", value=role.mention)
         embed.add_field(name="Owner", value=owner.mention)
+        embed.add_field(name="Roster cap", value=str(roster_cap))
         if logo:
             embed.set_thumbnail(url=logo.url)
         if role_note:
