@@ -75,14 +75,14 @@ def render_welcome_card(banner_path: str, avatar_bytes: bytes, headline: str) ->
     card.alpha_composite(border, ((width - 228) // 2, 42))
 
     draw = ImageDraw.Draw(card)
-    headline_font = _font(104, bold=True)
+    headline_font = _font(52, bold=False)
     while draw.textbbox((0, 0), headline, font=headline_font)[2] > width - 130 and headline_font.size > 32:
-        headline_font = _font(headline_font.size - 2, bold=True)
+        headline_font = _font(headline_font.size - 2, bold=False)
     headline_box = draw.textbbox((0, 0), headline, font=headline_font, stroke_width=2)
     headline_x = (width - (headline_box[2] - headline_box[0])) // 2
     draw.text(
         (headline_x, 325), headline, font=headline_font, fill="white",
-        stroke_width=3, stroke_fill=(0, 0, 0, 190),
+        stroke_width=2, stroke_fill=(0, 0, 0, 190),
     )
     output = io.BytesIO()
     card.convert("RGB").save(output, format="PNG", optimize=True)
