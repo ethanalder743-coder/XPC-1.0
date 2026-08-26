@@ -2,7 +2,7 @@ import re
 
 import cv2
 import numpy as np
-from rapidocr_onnxruntime import RapidOCR
+from rapidocr import RapidOCR
 
 
 _engine = None
@@ -20,11 +20,11 @@ def extract_rating(image_bytes: bytes, rating_name: str) -> float:
     image = cv2.imdecode(np.frombuffer(image_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
     if image is None:
         raise ValueError("The uploaded image could not be opened.")
-    results, _ = _ocr_engine()(image)
-    if not results:
+    result = _ocr_engine()(image)
+    lines = list(result.txts or [])
+    if not lines:
         raise ValueError("No text could be read from the screenshot.")
-    lines = [str(item[1]) for item in results]
-    text = "\n".join(lines)
+    text = "\n".join(str(line) for line in lines)
     compact = re.sub(r"\s+", " ", text)
     escaped = re.escape(rating_name)
     patterns = [
@@ -40,4 +40,3 @@ def extract_rating(image_bytes: bytes, rating_name: str) -> float:
     raise ValueError(
         f"Could not find the {rating_name} Rating. Make sure that tab and rating are visible."
     )
-
