@@ -212,6 +212,33 @@ class Database:
                     details TEXT,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );
+
+                CREATE TABLE IF NOT EXISTS fixtures (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    guild_id INTEGER NOT NULL,
+                    home_team TEXT NOT NULL,
+                    away_team TEXT NOT NULL,
+                    kickoff TEXT NOT NULL,
+                    competition TEXT NOT NULL DEFAULT 'League',
+                    status TEXT NOT NULL DEFAULT 'scheduled'
+                );
+
+                CREATE TABLE IF NOT EXISTS trophies (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    guild_id INTEGER NOT NULL,
+                    name TEXT NOT NULL,
+                    logo_url TEXT,
+                    UNIQUE (guild_id, name)
+                );
+
+                CREATE TABLE IF NOT EXISTS trophy_winners (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    guild_id INTEGER NOT NULL,
+                    trophy_id INTEGER NOT NULL,
+                    team_name TEXT NOT NULL,
+                    season TEXT NOT NULL,
+                    awarded_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
                 """
             )
 
@@ -950,6 +977,42 @@ class Database:
             return list(db.execute(
                 "SELECT * FROM audit_log WHERE guild_id = ? ORDER BY id DESC LIMIT ?",
                 (guild_id, limit),
+            ))
+
+    def add_fixture(self, guild_id: int, home: str, away: str, kickoff: str, competition: str) -> None:
+        with self.connect() as db:
+            db.execute(
+                "INSERT INTO fixtures (guild_id, home_team, away_team, kickoff, competition) VALUES (?, ?, ?, ?, ?)",
+                (guild_id, home, away, kickoff, competition),
+            )
+
+    def fixtures(self, guild_id: int) -> list[sqlite3.Row]:
+        with self.connect() as db:
+            return list(db.execute("SELECT * FROM fixtures WHERE guild_id = ? ORDER BY kickoff", (guild_id,)))
+
+    def add_trophy(self, guild_id: int, name: str, logo_url: str | None) -> int:
+        with self.connect() as db:
+            cursor = db.execute("INSERT INTO trophies (guild_id, name, logo_url) VALUES (?, ?, ?)", (guild_id, name, logo_url))
+            return int(cursor.lastrowid)
+
+    def trophies(self, guild_id: int) -> list[sqlite3.Row]:
+        with self.connect() as db:
+            return list(db.execute("SELECT * FROM trophies WHERE guild_id = ? ORDER BY name", (guild_id,)))
+
+    def award_trophy(self, guild_id: int, trophy_id: int, team_name: str, season: str) -> None:
+        with self.connect() as db:
+            db.execute(
+                "INSERT INTO trophy_winners (guild_id, trophy_id, team_name, season) VALUES (?, ?, ?, ?)",
+                (guild_id, trophy_id, team_name, season),
+            )
+
+    def trophy_winners(self, guild_id: int) -> list[sqlite3.Row]:
+        with self.connect() as db:
+            return list(db.execute(
+                """SELECT w.*, t.name trophy_name, t.logo_url trophy_logo
+                FROM trophy_winners w JOIN trophies t ON t.id = w.trophy_id
+                WHERE w.guild_id = ? ORDER BY w.awarded_at DESC""",
+                (guild_id,),
             ))
 
     def finish_loan(self, guild_id: int, player_id: int) -> sqlite3.Row | None:
