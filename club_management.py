@@ -141,38 +141,32 @@ class OfferView(discord.ui.View):
             team = self.db.team(offer["guild_id"], offer["team_name"])
             roster_cap = team["roster_cap"] if team else 22
             embed = discord.Embed(
-                title="✅  OFFER ACCEPTED",
+                title="Offer Accepted",
                 description=(
-                    f"### {member.mention} has officially signed with {role.mention}\n"
-                    "━━━━━━━━━━━━━━━━━━━━"
+                    f"{member.mention} has signed with {role.mention}"
                 ),
                 color=role.color if role.color.value else discord.Color.blurple(),
             )
             if team and team["owner_id"]:
                 embed.add_field(
-                    name="👑  FRANCHISE OWNER",
+                    name="• ⚽ Franchise Owner",
                     value=f"<@{team['owner_id']}>",
-                    inline=True,
+                    inline=False,
                 )
             embed.add_field(
-                name="🤝  SIGNED BY",
+                name="• 🤝 Signed By",
                 value=f"<@{offer['offered_by']}>",
-                inline=True,
-            )
-            embed.add_field(
-                name="📋  ROSTER CAP",
-                value=f"**{len(roster)} / {roster_cap}**",
                 inline=False,
             )
             embed.add_field(
-                name="⚽  CURRENT SQUAD",
-                value=roster_text(roster),
+                name="• 📋 Roster Cap",
+                value=f"**{len(roster)}/{roster_cap}**",
                 inline=False,
             )
             if team and team["logo_url"]:
                 embed.set_thumbnail(url=team["logo_url"])
-            embed.set_author(name=f"XPC TRANSFERS  •  {offer['team_name'].upper()}")
-            embed.set_footer(text=f"XPC Club Management  •  Offer #{self.offer_id}")
+            embed.set_author(name=f"XPC | {offer['team_name'].upper()} | FC26")
+            embed.set_footer(text=f"XPC BOT  •  Offer #{self.offer_id}")
             await channel.send(embed=embed)
 
 
@@ -458,3 +452,4 @@ class ClubManagement(commands.Cog):
 
 async def setup(bot: commands.Bot, database: Database) -> None:
     await bot.add_cog(ClubManagement(bot, database))
+
