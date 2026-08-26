@@ -262,9 +262,10 @@ class TicketCloseView(discord.ui.View):
                 "Only the ticket owner or support team can close this ticket.", ephemeral=True
             )
             return
-        await interaction.response.defer(ephemeral=True)
+        button.disabled = True
+        await interaction.response.edit_message(view=self)
         if not self.db.close_ticket(interaction.channel.id):
-            await interaction.followup.send("This ticket is already closed.", ephemeral=True)
+            await interaction.channel.send("This ticket is already closed.")
             return
         opener = interaction.guild.get_member(ticket["user_id"])
         if opener:
@@ -275,8 +276,6 @@ class TicketCloseView(discord.ui.View):
         if not new_name.startswith("closed-"):
             new_name = f"closed-{new_name}"[:100]
         await interaction.channel.edit(name=new_name, reason=f"Ticket closed by {member}")
-        button.disabled = True
-        await interaction.message.edit(view=self)
         await interaction.channel.send(
             embed=discord.Embed(
                 title="Ticket Closed",
@@ -285,7 +284,6 @@ class TicketCloseView(discord.ui.View):
                 timestamp=discord.utils.utcnow(),
             )
         )
-        await interaction.followup.send("Ticket closed. The channel will be deleted in 10 seconds.", ephemeral=True)
         await asyncio.sleep(10)
         try:
             await interaction.channel.delete(reason=f"Closed ticket deleted after 10 seconds by {member}")
@@ -393,6 +391,11 @@ class ClubManagement(commands.Cog):
         channel = member.guild.get_channel(config["channel_id"])
         if not isinstance(channel, discord.TextChannel) or not Path(config["banner_path"]).exists():
             return
+        await self.send_welcome_card(member, channel, config)
+
+    async def send_welcome_card(
+        self, member: discord.Member, channel: discord.TextChannel, config
+    ) -> bool:
         replacements = {
             "{user}": member.name,
             "{server}": member.guild.name,
@@ -417,8 +420,9 @@ class ClubManagement(commands.Cog):
                 file=discord.File(card, filename="welcome.png"),
                 allowed_mentions=discord.AllowedMentions(users=True),
             )
+            return True
         except (discord.HTTPException, OSError):
-            return
+            return False
 
     async def team_autocomplete(self, interaction: discord.Interaction, current: str):
         if interaction.guild_id is None:
@@ -1035,6 +1039,30 @@ class ClubManagement(commands.Cog):
         await interaction.followup.send(
             f"Welcome system configured for {channel.mention}.\n"
             "Available text placeholders: `{user}`, `{server}`, `{count}`.",
+            ephemeral=True,
+        )
+
+    @app_commands.command(name="welcometest", description="Test the configured welcome card")
+    @app_commands.guild_only()
+    @app_commands.checks.has_permissions(administrator=True)
+    async def welcometest(self, interaction: discord.Interaction):
+        assert interaction.guild and isinstance(interaction.user, discord.Member)
+        config = self.db.welcome_config(interaction.guild.id)
+        if not config:
+            await interaction.response.send_message(
+                "Run /welcomesetup first.", ephemeral=True
+            )
+            return
+        channel = interaction.guild.get_channel(config["channel_id"])
+        if not isinstance(channel, discord.TextChannel):
+            await interaction.response.send_message(
+                "The configured welcome channel no longer exists.", ephemeral=True
+            )
+            return
+        await interaction.response.defer(ephemeral=True)
+        sent = await self.send_welcome_card(interaction.user, channel, config)
+        await interaction.followup.send(
+            f"Welcome test posted in {channel.mention}." if sent else "The welcome card could not be generated.",
             ephemeral=True,
         )
 
