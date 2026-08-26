@@ -433,6 +433,37 @@ class ClubManagement(commands.Cog):
             if current in row["name"].casefold()
         ][:25]
 
+    async def refresh_budget_message(self, guild: discord.Guild) -> discord.Message | None:
+        config = self.db.budget_config(guild.id)
+        if not config:
+            return None
+        channel = guild.get_channel(config["channel_id"])
+        if not isinstance(channel, discord.TextChannel):
+            return None
+        entries = []
+        for team in self.db.teams(guild.id):
+            role = guild.get_role(team["role_id"])
+            if role:
+                entries.append(f"{role.mention}\n\n💰 - {self.db.team_budget(guild.id, team['name'])}M")
+        content = "\n\n".join(entries) or "No teams have been configured yet."
+        message = None
+        if config["message_id"]:
+            try:
+                message = await channel.fetch_message(config["message_id"])
+                await message.edit(
+                    content=content,
+                    allowed_mentions=discord.AllowedMentions(roles=False),
+                )
+            except (discord.NotFound, discord.Forbidden):
+                message = None
+        if message is None:
+            message = await channel.send(
+                content,
+                allowed_mentions=discord.AllowedMentions(roles=False),
+            )
+            self.db.set_budget_message(guild.id, message.id)
+        return message
+
     async def require_manager(self, interaction: discord.Interaction) -> bool:
         """Allow administrators or members with either configured manager role."""
         if not isinstance(interaction.user, discord.Member):
@@ -930,6 +961,160 @@ class ClubManagement(commands.Cog):
         if interaction.guild.icon:
             embed.set_thumbnail(url=interaction.guild.icon.url)
         await interaction.response.send_message(embed=embed)
+
+    @app_commands.command(name="budgetsetup", description="Set the channel for the live team budget list")
+    @app_commands.guild_only()
+    @app_commands.checks.has_permissions(administrator=True)
+    async def budgetsetup(self, interaction: discord.Interaction, channel: discord.TextChannel):
+        assert interaction.guild
+        await interaction.response.defer(ephemeral=True)
+        self.db.configure_budget_channel(interaction.guild.id, channel.id)
+        await self.refresh_budget_message(interaction.guild)
+        await interaction.followup.send(
+            f"The live budget list is now in {channel.mention}.", ephemeral=True
+        )
+
+    @app_commands.command(name="setbudget", description="Set a configured team's budget in millions")
+    @app_commands.guild_only()
+    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.autocomplete(team=team_autocomplete)
+    async def setbudget(
+        self, interaction: discord.Interaction, team: str,
+        amount: app_commands.Range[int, 0, 1000000],
+    ):
+        assert interaction.guild
+        record = self.db.team(interaction.guild.id, team)
+        if not record:
+            await interaction.response.send_message("That team is not configured.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        self.db.set_team_budget(interaction.guild.id, record["name"], amount)
+        await self.refresh_budget_message(interaction.guild)
+        await interaction.followup.send(
+            f"{interaction.guild.get_role(record['role_id']).mention} now has **{amount}M**.",
+            ephemeral=True,
+        )
+
+    @app_commands.command(name="budgets", description="Refresh the live team budget message")
+    @app_commands.guild_only()
+    @app_commands.checks.has_permissions(administrator=True)
+    async def budgets(self, interaction: discord.Interaction):
+        assert interaction.guild
+        await interaction.response.defer(ephemeral=True)
+        message = await self.refresh_budget_message(interaction.guild)
+        await interaction.followup.send(
+            "Budget message refreshed." if message else "Run /budgetsetup first.",
+            ephemeral=True,
+        )
+
+    @app_commands.command(name="transfer", description="Transfer a signed player between teams for a fee")
+    @app_commands.guild_only()
+    @app_commands.autocomplete(selling_team=team_autocomplete, buying_team=team_autocomplete)
+    async def transfer(
+        self, interaction: discord.Interaction, player: discord.Member,
+        selling_team: str, buying_team: str,
+        fee: app_commands.Range[int, 0, 1000000],
+    ):
+        if not await self.require_force_access(interaction):
+            return
+        assert interaction.guild
+        seller = self.db.team(interaction.guild.id, selling_team)
+        buyer = self.db.team(interaction.guild.id, buying_team)
+        if not seller or not buyer or seller["name"].casefold() == buyer["name"].casefold():
+            await interaction.response.send_message("Choose two different configured teams.", ephemeral=True)
+            return
+        seller_role = interaction.guild.get_role(seller["role_id"])
+        buyer_role = interaction.guild.get_role(buyer["role_id"])
+        if not seller_role or not buyer_role or seller_role not in player.roles:
+            await interaction.response.send_message("The player is not signed to the selling team.", ephemeral=True)
+            return
+        if self.db.active_loan(interaction.guild.id, player.id):
+            await interaction.response.send_message("End the player's active loan before transferring them.", ephemeral=True)
+            return
+        if self.db.team_budget(interaction.guild.id, buyer["name"]) < fee:
+            await interaction.response.send_message("The buying team does not have enough budget.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        try:
+            await player.remove_roles(seller_role, reason=f"Transfer actioned by {interaction.user}")
+            await player.add_roles(buyer_role, reason=f"Transfer actioned by {interaction.user}")
+        except discord.Forbidden:
+            await interaction.followup.send("I cannot move those roles. Put my bot role above both team roles.", ephemeral=True)
+            return
+        self.db.complete_transfer(
+            interaction.guild.id, player.id, seller["name"], buyer["name"], fee, interaction.user.id
+        )
+        await self.refresh_budget_message(interaction.guild)
+        await interaction.followup.send(
+            f"Transferred {player.mention} from {seller_role.mention} to {buyer_role.mention} for **{fee}M**.",
+            ephemeral=True,
+        )
+
+    @app_commands.command(name="loan", description="Loan a signed player to another configured team")
+    @app_commands.guild_only()
+    @app_commands.autocomplete(parent_team=team_autocomplete, loan_team=team_autocomplete)
+    async def loan(
+        self, interaction: discord.Interaction, player: discord.Member,
+        parent_team: str, loan_team: str,
+    ):
+        if not await self.require_force_access(interaction):
+            return
+        assert interaction.guild
+        parent = self.db.team(interaction.guild.id, parent_team)
+        destination = self.db.team(interaction.guild.id, loan_team)
+        if not parent or not destination or parent["name"].casefold() == destination["name"].casefold():
+            await interaction.response.send_message("Choose two different configured teams.", ephemeral=True)
+            return
+        parent_role = interaction.guild.get_role(parent["role_id"])
+        loan_role = interaction.guild.get_role(destination["role_id"])
+        if not parent_role or not loan_role or parent_role not in player.roles:
+            await interaction.response.send_message("The player is not signed to the parent team.", ephemeral=True)
+            return
+        if self.db.active_loan(interaction.guild.id, player.id):
+            await interaction.response.send_message("That player already has an active loan.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        try:
+            await player.remove_roles(parent_role, reason=f"Loan actioned by {interaction.user}")
+            await player.add_roles(loan_role, reason=f"Loan actioned by {interaction.user}")
+        except discord.Forbidden:
+            await interaction.followup.send("I cannot move those roles. Put my bot role above both team roles.", ephemeral=True)
+            return
+        self.db.start_loan(
+            interaction.guild.id, player.id, parent["name"], destination["name"], interaction.user.id
+        )
+        await interaction.followup.send(
+            f"Loaned {player.mention} from {parent_role.mention} to {loan_role.mention}.", ephemeral=True
+        )
+
+    @app_commands.command(name="endloan", description="End a player's active loan and return them")
+    @app_commands.guild_only()
+    async def endloan(self, interaction: discord.Interaction, player: discord.Member):
+        if not await self.require_force_access(interaction):
+            return
+        assert interaction.guild
+        loan = self.db.active_loan(interaction.guild.id, player.id)
+        if not loan:
+            await interaction.response.send_message("That player does not have an active loan.", ephemeral=True)
+            return
+        parent = self.db.team(interaction.guild.id, loan["parent_team"])
+        destination = self.db.team(interaction.guild.id, loan["loan_team"])
+        parent_role = interaction.guild.get_role(parent["role_id"]) if parent else None
+        loan_role = interaction.guild.get_role(destination["role_id"]) if destination else None
+        if not parent_role or not loan_role:
+            await interaction.response.send_message("One of the loan team roles no longer exists.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        try:
+            await player.remove_roles(loan_role, reason=f"Loan ended by {interaction.user}")
+            await player.add_roles(parent_role, reason=f"Loan ended by {interaction.user}")
+        except discord.Forbidden:
+            await interaction.followup.send("I cannot move those roles. Put my bot role above both team roles.", ephemeral=True)
+            return
+        self.db.finish_loan(interaction.guild.id, player.id)
+        await interaction.followup.send(
+            f"Loan ended. {player.mention} returned to {parent_role.mention}.", ephemeral=True
+        )
 
     team_group = app_commands.Group(name="team", description="Configure club teams", guild_only=True)
 
