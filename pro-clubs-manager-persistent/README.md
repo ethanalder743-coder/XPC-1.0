@@ -121,6 +121,18 @@ Players must allow direct messages from server members to receive offers. Discor
 
 ## GitHub and deployment
 
+## Installable control dashboard
+
+The bot includes a password-protected web app for live administration. It shows command status, team budgets, the transfer window, and recent command activity.
+
+1. In Railway variables, add `DASHBOARD_PASSWORD` with a long private password.
+2. Optionally add a different long random value as `DASHBOARD_SECRET`.
+3. In Railway Networking, generate a public domain for the service.
+4. Open that HTTPS address and sign in.
+5. In Chrome or Edge, use **Install app** from the address bar or browser menu to install XPC Control like a normal PC app.
+
+Never share the dashboard password. When it is not configured, the web dashboard does not start.
+
 Upload the unzipped folder to a new GitHub repository. Do not upload your `.env` file; it is already ignored by `.gitignore`.
 
 For a basic VPS or hosting service, install Python, install `requirements.txt`, add the same environment variables from `.env.example`, and run `python bot.py`.
