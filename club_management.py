@@ -39,11 +39,14 @@ def _font(size: int, bold: bool = False):
     names = [
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold
         else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf",
         "C:/Windows/Fonts/arialbd.ttf" if bold else "C:/Windows/Fonts/arial.ttf",
     ]
     for name in names:
-        if Path(name).exists():
+        try:
             return ImageFont.truetype(name, size)
+        except OSError:
+            continue
     return ImageFont.load_default()
 
 
@@ -72,7 +75,7 @@ def render_welcome_card(banner_path: str, avatar_bytes: bytes, headline: str) ->
     card.alpha_composite(border, ((width - 228) // 2, 42))
 
     draw = ImageDraw.Draw(card)
-    headline_font = _font(86, bold=True)
+    headline_font = _font(104, bold=True)
     while draw.textbbox((0, 0), headline, font=headline_font)[2] > width - 130 and headline_font.size > 32:
         headline_font = _font(headline_font.size - 2, bold=True)
     headline_box = draw.textbbox((0, 0), headline, font=headline_font, stroke_width=2)
