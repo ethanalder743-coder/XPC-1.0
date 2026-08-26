@@ -48,6 +48,14 @@ class Database:
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     decided_at TEXT
                 );
+
+                CREATE TABLE IF NOT EXISTS team_members (
+                    guild_id INTEGER NOT NULL,
+                    team_name TEXT NOT NULL COLLATE NOCASE,
+                    player_id INTEGER NOT NULL,
+                    joined_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (guild_id, team_name, player_id)
+                );
                 """
             )
 
@@ -172,3 +180,30 @@ class Database:
                 (status, offer_id),
             )
             return cursor.rowcount > 0
+
+    def add_team_member(self, guild_id: int, team_name: str, player_id: int) -> None:
+        with self.connect() as db:
+            db.execute(
+                """
+                INSERT OR REPLACE INTO team_members (guild_id, team_name, player_id)
+                VALUES (?, ?, ?)
+                """,
+                (guild_id, team_name, player_id),
+            )
+
+    def remove_team_member(self, guild_id: int, team_name: str, player_id: int) -> None:
+        with self.connect() as db:
+            db.execute(
+                "DELETE FROM team_members WHERE guild_id = ? AND team_name = ? AND player_id = ?",
+                (guild_id, team_name, player_id),
+            )
+
+    def team_member_ids(self, guild_id: int, team_name: str) -> list[int]:
+        with self.connect() as db:
+            return [
+                row["player_id"]
+                for row in db.execute(
+                    "SELECT player_id FROM team_members WHERE guild_id = ? AND team_name = ? ORDER BY joined_at",
+                    (guild_id, team_name),
+                )
+            ]
