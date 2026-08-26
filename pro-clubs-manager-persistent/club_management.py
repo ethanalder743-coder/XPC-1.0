@@ -139,6 +139,9 @@ class OfferView(discord.ui.View):
         if role is None or member is None:
             await interaction.followup.send("The player or team role no longer exists.", ephemeral=True)
             return
+        if self.db.blacklist_entry(guild.id, member.id):
+            await interaction.followup.send("You are currently blacklisted and cannot accept offers.", ephemeral=True)
+            return
         try:
             await member.add_roles(role, reason=f"Accepted club offer #{self.offer_id}")
         except discord.Forbidden:
@@ -606,6 +609,29 @@ class ClubManagement(commands.Cog):
         )
         return False
 
+    async def require_franchise_owner(self, interaction: discord.Interaction) -> bool:
+        if not isinstance(interaction.user, discord.Member):
+            return False
+        if interaction.user.guild_permissions.administrator:
+            return True
+        config = self.db.league_config(interaction.guild_id)
+        if config and config["franchise_role_id"] and any(
+            role.id == config["franchise_role_id"] for role in interaction.user.roles
+        ):
+            return True
+        await interaction.response.send_message(
+            "Only the configured franchise owner role can use this command.", ephemeral=True
+        )
+        return False
+
+    def managed_team_for(self, member: discord.Member):
+        role_ids = {role.id for role in member.roles}
+        matches = [
+            team for team in self.db.teams(member.guild.id)
+            if team["owner_id"] == member.id or team["role_id"] in role_ids
+        ]
+        return matches[0] if len(matches) == 1 else None
+
     def totw_team_for_member(self, member: discord.Member):
         signed_team = self.db.signed_team_for_user(member.guild.id, member.id)
         if signed_team:
@@ -668,6 +694,15 @@ class ClubManagement(commands.Cog):
     @app_commands.guild_only()
     async def offer(self, interaction: discord.Interaction, player: discord.Member):
         if not await self.require_manager(interaction):
+            return
+        if not self.db.transfer_window_open(interaction.guild_id):
+            await interaction.response.send_message("The transfer window is currently closed.", ephemeral=True)
+            return
+        blacklist = self.db.blacklist_entry(interaction.guild_id, player.id)
+        if blacklist:
+            await interaction.response.send_message(
+                f"That player is blacklisted: {blacklist['reason']}", ephemeral=True
+            )
             return
         assert interaction.guild and interaction.channel
         record = await self.manager_team(interaction)
@@ -1130,6 +1165,9 @@ class ClubManagement(commands.Cog):
     ):
         if not await self.require_force_access(interaction):
             return
+        if not self.db.transfer_window_open(interaction.guild_id):
+            await interaction.response.send_message("The transfer window is currently closed.", ephemeral=True)
+            return
         assert interaction.guild
         seller = self.db.team(interaction.guild.id, selling_team)
         buyer = self.db.team(interaction.guild.id, buying_team)
@@ -1171,6 +1209,9 @@ class ClubManagement(commands.Cog):
         parent_team: str, loan_team: str,
     ):
         if not await self.require_force_access(interaction):
+            return
+        if not self.db.transfer_window_open(interaction.guild_id):
+            await interaction.response.send_message("The transfer window is currently closed.", ephemeral=True)
             return
         assert interaction.guild
         parent = self.db.team(interaction.guild.id, parent_team)
@@ -1293,6 +1334,333 @@ class ClubManagement(commands.Cog):
             poll=poll,
             allowed_mentions=discord.AllowedMentions(roles=True),
         )
+
+    @app_commands.command(name="franchiseconfig", description="Set the Discord role used for franchise owners")
+    @app_commands.guild_only()
+    @app_commands.checks.has_permissions(administrator=True)
+    async def franchiseconfig(self, interaction: discord.Interaction, role: discord.Role):
+        self.db.configure_franchise_role(interaction.guild_id, role.id)
+        await interaction.response.send_message(f"Franchise owner role set to {role.mention}.", ephemeral=True)
+
+    @app_commands.command(name="appointfranchiseowner", description="Give a member the franchise owner role")
+    @app_commands.guild_only()
+    @app_commands.checks.has_permissions(administrator=True)
+    async def appointfranchiseowner(self, interaction: discord.Interaction, member: discord.Member):
+        config = self.db.league_config(interaction.guild_id)
+        role = interaction.guild.get_role(config["franchise_role_id"]) if config and config["franchise_role_id"] else None
+        if role is None:
+            await interaction.response.send_message("Run /franchiseconfig first.", ephemeral=True)
+            return
+        try:
+            await member.add_roles(role, reason=f"Appointed by {interaction.user}")
+        except discord.Forbidden:
+            await interaction.response.send_message("I cannot assign that role. Put my bot role above it.", ephemeral=True)
+            return
+        await interaction.response.send_message(f"Appointed {member.mention} as a franchise owner.", ephemeral=True)
+
+    @app_commands.command(name="blacklist", description="Blacklist a player from club offers")
+    @app_commands.guild_only()
+    async def blacklist(self, interaction: discord.Interaction, player: discord.Member, reason: str):
+        if not await self.require_franchise_owner(interaction):
+            return
+        self.db.blacklist_user(interaction.guild_id, player.id, reason[:250], interaction.user.id)
+        await interaction.response.send_message(f"Blacklisted {player.mention}: {reason}", ephemeral=True)
+
+    @app_commands.command(name="removeblacklist", description="Remove a player from the blacklist")
+    @app_commands.guild_only()
+    async def removeblacklist(self, interaction: discord.Interaction, player: discord.Member):
+        if not await self.require_franchise_owner(interaction):
+            return
+        removed = self.db.remove_blacklist(interaction.guild_id, player.id)
+        await interaction.response.send_message(
+            f"Removed {player.mention} from the blacklist." if removed else "That player is not blacklisted.",
+            ephemeral=True,
+        )
+
+    @app_commands.command(name="blacklistlist", description="View every blacklisted player")
+    @app_commands.guild_only()
+    async def blacklistlist(self, interaction: discord.Interaction):
+        if not await self.require_franchise_owner(interaction):
+            return
+        rows = self.db.blacklist_entries(interaction.guild_id)
+        text = "\n".join(f"<@{row['user_id']}> — {row['reason']}" for row in rows) or "No blacklisted players."
+        await interaction.response.send_message(embed=discord.Embed(title="BLACKLIST", description=text, color=discord.Color.red()), ephemeral=True)
+
+    @app_commands.command(name="openwindow", description="Open the transfer window")
+    @app_commands.guild_only()
+    async def openwindow(self, interaction: discord.Interaction):
+        if not await self.require_franchise_owner(interaction):
+            return
+        self.db.set_transfer_window(interaction.guild_id, True)
+        await interaction.response.send_message("The transfer window is now **OPEN**.")
+
+    @app_commands.command(name="closewindow", description="Close the transfer window")
+    @app_commands.guild_only()
+    async def closewindow(self, interaction: discord.Interaction):
+        if not await self.require_franchise_owner(interaction):
+            return
+        self.db.set_transfer_window(interaction.guild_id, False)
+        await interaction.response.send_message("The transfer window is now **CLOSED**.")
+
+    @app_commands.command(name="canceloffer", description="Cancel one of your pending offers")
+    @app_commands.guild_only()
+    async def canceloffer(self, interaction: discord.Interaction, offer_id: int):
+        offer = self.db.offer(offer_id)
+        if not offer or offer["guild_id"] != interaction.guild_id or offer["status"] != "pending":
+            await interaction.response.send_message("That pending offer was not found.", ephemeral=True)
+            return
+        config = self.db.league_config(interaction.guild_id)
+        is_franchise = isinstance(interaction.user, discord.Member) and config and config["franchise_role_id"] and any(
+            role.id == config["franchise_role_id"] for role in interaction.user.roles
+        )
+        if offer["offered_by"] != interaction.user.id and not interaction.user.guild_permissions.administrator and not is_franchise:
+            await interaction.response.send_message("You cannot cancel that offer.", ephemeral=True)
+            return
+        self.db.cancel_offer(offer_id, interaction.guild_id)
+        await interaction.response.send_message(f"Offer #{offer_id} cancelled.", ephemeral=True)
+
+    @app_commands.command(name="myoffers", description="View your pending player offers")
+    @app_commands.guild_only()
+    async def myoffers(self, interaction: discord.Interaction):
+        rows = self.db.pending_offers_for_player(interaction.guild_id, interaction.user.id)
+        text = "\n".join(f"**#{row['id']}** — {row['team_name']} — <@{row['offered_by']}>" for row in rows) or "You have no pending offers."
+        await interaction.response.send_message(embed=discord.Embed(title="MY OFFERS", description=text, color=discord.Color.blurple()), ephemeral=True)
+
+    @app_commands.command(name="teamoffers", description="View pending offers sent by a team")
+    @app_commands.guild_only()
+    @app_commands.autocomplete(team=team_autocomplete)
+    async def teamoffers(self, interaction: discord.Interaction, team: str):
+        if not await self.require_franchise_owner(interaction):
+            return
+        record = self.db.team(interaction.guild_id, team)
+        if not record:
+            await interaction.response.send_message("That team is not configured.", ephemeral=True)
+            return
+        rows = self.db.pending_offers_for_team(interaction.guild_id, record["name"])
+        text = "\n".join(f"**#{row['id']}** — <@{row['player_id']}> — sent by <@{row['offered_by']}>" for row in rows) or "No pending offers."
+        await interaction.response.send_message(embed=discord.Embed(title=f"{record['name']} OFFERS", description=text, color=discord.Color.blurple()), ephemeral=True)
+
+    @app_commands.command(name="editteam", description="Edit a configured team's details")
+    @app_commands.guild_only()
+    @app_commands.autocomplete(team=team_autocomplete)
+    async def editteam(
+        self, interaction: discord.Interaction, team: str, new_name: str,
+        role: discord.Role, owner: discord.Member,
+        roster_cap: app_commands.Range[int, 1, 99] = 22,
+    ):
+        if not await self.require_franchise_owner(interaction):
+            return
+        record = self.db.team(interaction.guild_id, team)
+        if not record:
+            await interaction.response.send_message("That team is not configured.", ephemeral=True)
+            return
+        self.db.update_team(interaction.guild_id, record["name"], new_name.strip(), role.id, owner.id, roster_cap)
+        await interaction.response.send_message(f"Updated **{record['name']}** to {role.mention} / **{new_name.strip()}**.", ephemeral=True)
+
+    @app_commands.command(name="transferownership", description="Transfer ownership of a configured team")
+    @app_commands.guild_only()
+    @app_commands.autocomplete(team=team_autocomplete)
+    async def transferownership(self, interaction: discord.Interaction, team: str, new_owner: discord.Member):
+        if not await self.require_franchise_owner(interaction):
+            return
+        record = self.db.team(interaction.guild_id, team)
+        if not record:
+            await interaction.response.send_message("That team is not configured.", ephemeral=True)
+            return
+        self.db.set_team_owner(interaction.guild_id, record["name"], new_owner.id)
+        await interaction.response.send_message(f"{new_owner.mention} now owns **{record['name']}**.", ephemeral=True)
+
+    async def change_management_roles(
+        self, interaction: discord.Interaction, player: discord.Member,
+        team: str, level: Literal["Manager", "Co-Manager"], remove: bool = False,
+    ):
+        record = self.db.team(interaction.guild_id, team)
+        config = self.db.config(interaction.guild_id)
+        if not record or not config:
+            await interaction.response.send_message("The team or management roles are not configured.", ephemeral=True)
+            return
+        role_id = config["manager_role_1_id"] if level == "Manager" else config["manager_role_2_id"]
+        management_role = interaction.guild.get_role(role_id)
+        team_role = interaction.guild.get_role(record["role_id"])
+        if not management_role or not team_role:
+            await interaction.response.send_message("A required Discord role no longer exists.", ephemeral=True)
+            return
+        try:
+            if remove:
+                await player.remove_roles(management_role, reason=f"Demoted by {interaction.user}")
+            else:
+                await player.add_roles(team_role, management_role, reason=f"Promoted by {interaction.user}")
+                self.db.add_team_member(interaction.guild_id, record["name"], player.id)
+        except discord.Forbidden:
+            await interaction.response.send_message("I cannot manage those roles. Move my bot role higher.", ephemeral=True)
+            return
+        await interaction.response.send_message(
+            f"{'Demoted' if remove else 'Promoted'} {player.mention} {'from' if remove else 'to'} {management_role.mention}.", ephemeral=True
+        )
+
+    @app_commands.command(name="promote", description="Promote a player to manager or co-manager")
+    @app_commands.guild_only()
+    @app_commands.autocomplete(team=team_autocomplete)
+    async def promote(self, interaction: discord.Interaction, player: discord.Member, team: str, level: Literal["Manager", "Co-Manager"]):
+        if not await self.require_franchise_owner(interaction):
+            return
+        await self.change_management_roles(interaction, player, team, level)
+
+    @app_commands.command(name="demoteco", description="Demote a co-manager back to player")
+    @app_commands.guild_only()
+    @app_commands.autocomplete(team=team_autocomplete)
+    async def demoteco(self, interaction: discord.Interaction, player: discord.Member, team: str):
+        if not await self.require_franchise_owner(interaction):
+            return
+        await self.change_management_roles(interaction, player, team, "Co-Manager", remove=True)
+
+    @app_commands.command(name="forcepromote", description="Force promote a player to management")
+    @app_commands.guild_only()
+    @app_commands.autocomplete(team=team_autocomplete)
+    async def forcepromote(self, interaction: discord.Interaction, player: discord.Member, team: str, level: Literal["Manager", "Co-Manager"]):
+        if not await self.require_force_access(interaction):
+            return
+        await self.change_management_roles(interaction, player, team, level)
+
+    @app_commands.command(name="forcedemote", description="Remove both management roles from a member")
+    @app_commands.guild_only()
+    async def forcedemote(self, interaction: discord.Interaction, player: discord.Member):
+        if not await self.require_force_access(interaction):
+            return
+        config = self.db.config(interaction.guild_id)
+        roles = [interaction.guild.get_role(config[key]) for key in ("manager_role_1_id", "manager_role_2_id")] if config else []
+        roles = [role for role in roles if role]
+        try:
+            await player.remove_roles(*roles, reason=f"Force demoted by {interaction.user}")
+        except discord.Forbidden:
+            await interaction.response.send_message("I cannot remove those roles.", ephemeral=True)
+            return
+        await interaction.response.send_message(f"Force demoted {player.mention} to player.", ephemeral=True)
+
+    @app_commands.command(name="recallloan", description="Recall a player from their active loan")
+    @app_commands.guild_only()
+    async def recallloan(self, interaction: discord.Interaction, player: discord.Member):
+        if not await self.require_franchise_owner(interaction):
+            return
+        loan = self.db.active_loan(interaction.guild_id, player.id)
+        if not loan:
+            await interaction.response.send_message("That player does not have an active loan.", ephemeral=True)
+            return
+        parent = self.db.team(interaction.guild_id, loan["parent_team"])
+        destination = self.db.team(interaction.guild_id, loan["loan_team"])
+        parent_role = interaction.guild.get_role(parent["role_id"]) if parent else None
+        loan_role = interaction.guild.get_role(destination["role_id"]) if destination else None
+        if not parent_role or not loan_role:
+            await interaction.response.send_message("One of the loan team roles no longer exists.", ephemeral=True)
+            return
+        try:
+            await player.remove_roles(loan_role, reason=f"Loan recalled by {interaction.user}")
+            await player.add_roles(parent_role, reason=f"Loan recalled by {interaction.user}")
+        except discord.Forbidden:
+            await interaction.response.send_message("I cannot move those roles. Move my bot role higher.", ephemeral=True)
+            return
+        self.db.finish_loan(interaction.guild_id, player.id)
+        await interaction.response.send_message(f"Recalled {player.mention} to {parent_role.mention}.", ephemeral=True)
+
+    @app_commands.command(name="result", description="Submit a league match result")
+    @app_commands.guild_only()
+    @app_commands.autocomplete(home_team=team_autocomplete, away_team=team_autocomplete)
+    async def result(
+        self, interaction: discord.Interaction, home_team: str, away_team: str,
+        home_score: app_commands.Range[int, 0, 99], away_score: app_commands.Range[int, 0, 99],
+    ):
+        if not await self.require_manager(interaction):
+            return
+        home = self.db.team(interaction.guild_id, home_team)
+        away = self.db.team(interaction.guild_id, away_team)
+        managed = self.managed_team_for(interaction.user)
+        if not home or not away or home["name"].casefold() == away["name"].casefold():
+            await interaction.response.send_message("Choose two different configured teams.", ephemeral=True)
+            return
+        if not managed or managed["name"].casefold() not in {home["name"].casefold(), away["name"].casefold()}:
+            await interaction.response.send_message("You can only submit a result involving your team.", ephemeral=True)
+            return
+        self.db.add_result(interaction.guild_id, home["name"], away["name"], home_score, away_score, interaction.user.id)
+        await interaction.response.send_message(f"**{home['name']} {home_score}–{away_score} {away['name']}**")
+
+    @app_commands.command(name="standings", description="Show the current league standings")
+    @app_commands.guild_only()
+    async def standings(self, interaction: discord.Interaction):
+        if not await self.require_franchise_owner(interaction):
+            return
+        table = {team["name"]: {"p": 0, "w": 0, "d": 0, "l": 0, "gf": 0, "ga": 0, "pts": 0} for team in self.db.teams(interaction.guild_id)}
+        for row in self.db.results(interaction.guild_id):
+            if row["home_team"] not in table or row["away_team"] not in table:
+                continue
+            home, away = table[row["home_team"]], table[row["away_team"]]
+            home["p"] += 1; away["p"] += 1
+            home["gf"] += row["home_score"]; home["ga"] += row["away_score"]
+            away["gf"] += row["away_score"]; away["ga"] += row["home_score"]
+            if row["home_score"] > row["away_score"]:
+                home["w"] += 1; home["pts"] += 3; away["l"] += 1
+            elif row["home_score"] < row["away_score"]:
+                away["w"] += 1; away["pts"] += 3; home["l"] += 1
+            else:
+                home["d"] += 1; away["d"] += 1; home["pts"] += 1; away["pts"] += 1
+        ordered = sorted(table.items(), key=lambda item: (item[1]["pts"], item[1]["gf"] - item[1]["ga"], item[1]["gf"]), reverse=True)
+        lines = ["`#  TEAM                 P  W  D  L  GD PTS`"]
+        for index, (name, stats) in enumerate(ordered, 1):
+            gd = stats["gf"] - stats["ga"]
+            lines.append(f"`{index:>2} {name[:18]:<18} {stats['p']:>2} {stats['w']:>2} {stats['d']:>2} {stats['l']:>2} {gd:>3} {stats['pts']:>3}`")
+        await interaction.response.send_message(embed=discord.Embed(title="LEAGUE STANDINGS", description="\n".join(lines), color=discord.Color.gold()))
+
+    @app_commands.command(name="logstyle", description="Choose compact or detailed bot logs")
+    @app_commands.guild_only()
+    async def logstyle(self, interaction: discord.Interaction, style: Literal["Compact", "Detailed"]):
+        if not await self.require_franchise_owner(interaction):
+            return
+        self.db.set_log_style(interaction.guild_id, style.lower())
+        await interaction.response.send_message(f"Log style changed to **{style}**.", ephemeral=True)
+
+    @app_commands.command(name="debug", description="Check the bot configuration and permissions")
+    @app_commands.guild_only()
+    @app_commands.checks.has_permissions(administrator=True)
+    async def debug(self, interaction: discord.Interaction):
+        config = self.db.config(interaction.guild_id)
+        league = self.db.league_config(interaction.guild_id)
+        description = (
+            f"Database: **Connected**\nTeams: **{len(self.db.teams(interaction.guild_id))}**\n"
+            f"Club setup: **{'Ready' if config else 'Missing'}**\n"
+            f"Franchise role: **{'Ready' if league and league['franchise_role_id'] else 'Missing'}**\n"
+            f"Transfer window: **{'Open' if self.db.transfer_window_open(interaction.guild_id) else 'Closed'}**\n"
+            f"Budget setup: **{'Ready' if self.db.budget_config(interaction.guild_id) else 'Missing'}**"
+        )
+        await interaction.response.send_message(embed=discord.Embed(title="BOT DEBUG", description=description, color=discord.Color.green()), ephemeral=True)
+
+    @app_commands.command(name="endseason", description="Reset all season activity while keeping configured teams")
+    @app_commands.guild_only()
+    @app_commands.checks.has_permissions(administrator=True)
+    async def endseason(self, interaction: discord.Interaction, confirm: bool):
+        if not confirm:
+            await interaction.response.send_message("Nothing was reset. Set confirm to True to end the season.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        self.db.end_season(interaction.guild_id)
+        await self.refresh_budget_message(interaction.guild)
+        await interaction.followup.send("Season ended. Results, offers, loans, rosters and season data were reset.", ephemeral=True)
+
+    @app_commands.command(name="help", description="Show all XPC management commands")
+    @app_commands.guild_only()
+    async def help_command(self, interaction: discord.Interaction):
+        text = (
+            "**Clubs:** `/offer` `/release` `/roster` `/myoffers` `/canceloffer`\n"
+            "**Transfers:** `/transfer` `/loan` `/endloan` `/recallloan` `/loans` `/openwindow` `/closewindow`\n"
+            "**Budgets:** `/budgetsetup` `/setbudget` `/budgets`\n"
+            "**League:** `/result` `/standings` `/endseason`\n"
+            "**Teams:** `/addteam` `/editteam` `/removeteam` `/transferownership` `/teamoffers`\n"
+            "**Staff:** `/promote` `/demoteco` `/forcepromote` `/forcedemote` `/forcesign` `/forcerelease`\n"
+            "**Safety:** `/blacklist` `/removeblacklist` `/blacklistlist` `/debug`\n"
+            "**Community:** `/poll` `/pollconfig` `/ticketsetup` `/staffapplicationsetup` `/welcomesetup` `/rulesembed`\n"
+            "**TOTW:** `/uploadstats` `/totwlist` `/totwsetweek`"
+        )
+        embed = discord.Embed(title="XPC COMMAND HELP", description=text, color=discord.Color.blurple())
+        embed.set_footer(text="Made By EthanCoys")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
     team_group = app_commands.Group(name="team", description="Configure club teams", guild_only=True)
 
