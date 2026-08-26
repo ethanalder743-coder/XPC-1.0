@@ -421,9 +421,7 @@ class ClubManagement(commands.Cog):
                 subtext,
             )
             await channel.send(
-                content=f"Hey {member.mention}, welcome to **{member.guild.name}**!",
                 file=discord.File(card, filename="welcome.png"),
-                allowed_mentions=discord.AllowedMentions(users=True),
             )
             return True
         except (discord.HTTPException, OSError):
@@ -1127,3 +1125,4 @@ async def setup(bot: commands.Bot, database: Database) -> None:
     await bot.add_cog(ClubManagement(bot, database))
     bot.add_view(TicketPanelView(bot, database, ["General Support"]))
     bot.add_view(TicketCloseView(database))
+
