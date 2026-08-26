@@ -21,6 +21,7 @@ This project is inspired only by common club-management workflows. It does not c
 - `/ticketsetup` lets an administrator choose the panel channel, private ticket category, support role to ping, and comma-separated problem types. Users choose a problem from the persistent dropdown, receive a private channel, and can close it with a button. Closed ticket channels are deleted after 10 seconds.
 - `/forceconfig` sets up to five staff roles allowed to use `/forcesign` and `/forcerelease`. Administrators always have access. Force actions update Discord roles, saved rosters, and log channels.
 - `/welcomesetup` lets an administrator choose a welcome channel, upload a custom banner, and set headline/subtext templates. New members receive a generated card with their avatar. Templates support `{user}`, `{server}`, and `{count}`.
+- `/welcometest` posts a test welcome card for the administrator in the configured welcome channel.
 - `/config_setup` configures signing/release channels and exactly two management roles.
 - Team names autocomplete from the server's saved configuration.
 - SQLite stores teams, configuration, and offers.
