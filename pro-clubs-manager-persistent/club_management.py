@@ -507,7 +507,7 @@ class ClubManagement(commands.Cog):
         self, member: discord.Member, channel: discord.TextChannel, config
     ) -> bool:
         replacements = {
-            "{user}": member.name,
+            "{user}": member.mention,
             "{display}": member.display_name,
             "{server}": member.guild.name,
             "{count}": str(member.guild.member_count or 0),
