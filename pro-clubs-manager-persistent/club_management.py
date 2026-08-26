@@ -211,17 +211,23 @@ class OfferView(discord.ui.View):
             team = self.db.team(offer["guild_id"], offer["team_name"])
             roster_cap = team["roster_cap"] if team else 22
             owner_text = f"<@{team['owner_id']}>" if team and team["owner_id"] else "Not configured"
+            league = self.db.league_config(guild.id)
+            compact = bool(league and league["log_style"] == "compact")
+            description = (
+                f"**PLAYER SIGNED**\n{member.mention} signed with {role.mention} — "
+                f"Roster `{len(roster):02d}/{roster_cap:02d}`"
+                if compact else
+                "## PLAYER SIGNED\n"
+                f"### {member.mention} / {member.name}\n"
+                f"has signed with {inline_team_logo(team)}{role.mention}\n\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                f"- **TEAM** — {inline_team_logo(team)}{role.mention}\n"
+                f"- **TEAM OWNER** — {owner_text}\n"
+                f"- **SIGNED BY** — <@{offer['offered_by']}>\n"
+                f"- **ROSTER** — `{len(roster):02d} / {roster_cap:02d}`"
+            )
             embed = discord.Embed(
-                description=(
-                    "## PLAYER SIGNED\n"
-                    f"### {member.mention} / {member.name}\n"
-                    f"has signed with {inline_team_logo(team)}{role.mention}\n\n"
-                    "━━━━━━━━━━━━━━━━━━━━\n"
-                    f"- **TEAM** — {inline_team_logo(team)}{role.mention}\n"
-                    f"- **TEAM OWNER** — {owner_text}\n"
-                    f"- **SIGNED BY** — <@{offer['offered_by']}>\n"
-                    f"- **ROSTER** — `{len(roster):02d} / {roster_cap:02d}`"
-                ),
+                description=description,
                 color=role.color if role.color.value else discord.Color.blurple(),
                 timestamp=discord.utils.utcnow(),
             )
@@ -791,16 +797,22 @@ class ClubManagement(commands.Cog):
             roster = get_player_roster(self.db, interaction.guild, role, record["name"])
             roster_cap = record["roster_cap"] if record else 22
             owner_text = f"<@{record['owner_id']}>" if record["owner_id"] else "Not configured"
+            league = self.db.league_config(interaction.guild.id)
+            compact = bool(league and league["log_style"] == "compact")
+            description = (
+                f"**PLAYER RELEASED**\n{player.mention} was released by {role.mention} — "
+                f"Roster `{len(roster):02d}/{roster_cap:02d}`"
+                if compact else
+                "## PLAYER RELEASED\n"
+                f"### {player.mention} / {player.name}\n"
+                f"was released by {inline_team_logo(record)}{role.mention}\n\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                f"- **TEAM** — {inline_team_logo(record)}{role.mention}\n"
+                f"- **TEAM OWNER** — {owner_text}\n"
+                f"- **ROSTER** — `{len(roster):02d} / {roster_cap:02d}`"
+            )
             embed = discord.Embed(
-                description=(
-                    "## PLAYER RELEASED\n"
-                    f"### {player.mention} / {player.name}\n"
-                    f"was released by {inline_team_logo(record)}{role.mention}\n\n"
-                    "━━━━━━━━━━━━━━━━━━━━\n"
-                    f"- **TEAM** — {inline_team_logo(record)}{role.mention}\n"
-                    f"- **TEAM OWNER** — {owner_text}\n"
-                    f"- **ROSTER** — `{len(roster):02d} / {roster_cap:02d}`"
-                ),
+                description=description,
                 color=discord.Color.red(),
                 timestamp=discord.utils.utcnow(),
             )
@@ -912,16 +924,22 @@ class ClubManagement(commands.Cog):
         channel = interaction.guild.get_channel(config["release_channel_id"]) if config else None
         if isinstance(channel, discord.TextChannel):
             roster = get_player_roster(self.db, interaction.guild, role, record["name"])
+            league = self.db.league_config(interaction.guild.id)
+            compact = bool(league and league["log_style"] == "compact")
+            description = (
+                f"**PLAYER RELEASED**\n{player.mention} was released by {role.mention} — "
+                f"Roster `{len(roster):02d}/{record['roster_cap']:02d}`"
+                if compact else
+                "## PLAYER RELEASED\n"
+                f"### {player.mention} / {player.name}\n"
+                f"was released by {inline_team_logo(record)}{role.mention}\n\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                f"- **TEAM** — {inline_team_logo(record)}{role.mention}\n"
+                f"- **ACTIONED BY** — {interaction.user.mention}\n"
+                f"- **ROSTER** — `{len(roster):02d} / {record['roster_cap']:02d}`"
+            )
             embed = discord.Embed(
-                description=(
-                    "## PLAYER RELEASED\n"
-                    f"### {player.mention} / {player.name}\n"
-                    f"was released by {inline_team_logo(record)}{role.mention}\n\n"
-                    "━━━━━━━━━━━━━━━━━━━━\n"
-                    f"- **TEAM** — {inline_team_logo(record)}{role.mention}\n"
-                    f"- **ACTIONED BY** — {interaction.user.mention}\n"
-                    f"- **ROSTER** — `{len(roster):02d} / {record['roster_cap']:02d}`"
-                ),
+                description=description,
                 color=discord.Color.red(),
                 timestamp=discord.utils.utcnow(),
             )
