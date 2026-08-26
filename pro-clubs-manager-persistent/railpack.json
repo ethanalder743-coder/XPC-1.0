@@ -8,7 +8,8 @@
       "libglib2.0-0",
       "libsm6",
       "libxext6",
-      "libxrender1"
+      "libxrender1",
+      "fonts-dejavu-core"
     ]
   }
 }
