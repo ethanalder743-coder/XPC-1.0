@@ -150,7 +150,7 @@ class OfferView(discord.ui.View):
                     f"- **TEAM** — {role.mention}\n"
                     f"- **TEAM OWNER** — {owner_text}\n"
                     f"- **SIGNED BY** — <@{offer['offered_by']}>\n"
-                    f"- **ROSTER CAP** — `{len(roster):02d} / {roster_cap:02d}` players signed"
+                    f"- **ROSTER** — `{len(roster):02d} / {roster_cap:02d}`"
                 ),
                 color=role.color if role.color.value else discord.Color.blurple(),
                 timestamp=discord.utils.utcnow(),
@@ -342,7 +342,7 @@ class ClubManagement(commands.Cog):
                     "━━━━━━━━━━━━━━━━━━━━\n"
                     f"- **TEAM** — {role.mention}\n"
                     f"- **TEAM OWNER** — {owner_text}\n"
-                    f"- **ROSTER CAP** — `{len(roster):02d} / {roster_cap:02d}` players signed"
+                    f"- **ROSTER** — `{len(roster):02d} / {roster_cap:02d}`"
                     f"{reason_text}"
                 ),
                 color=discord.Color.red(),
@@ -364,6 +364,44 @@ class ClubManagement(commands.Cog):
                     embed.set_author(name=interaction.guild.name)
             embed.set_footer(text="Made By EthanCoys")
             await channel.send(embed=embed)
+
+    @app_commands.command(name="roster", description="View your team's signed roster")
+    @app_commands.guild_only()
+    async def roster(self, interaction: discord.Interaction):
+        if not await self.require_manager(interaction):
+            return
+        assert interaction.guild
+        record = await self.manager_team(interaction)
+        if not record:
+            return
+        role = interaction.guild.get_role(record["role_id"])
+        if role is None:
+            await interaction.response.send_message(
+                "Your configured team role no longer exists.", ephemeral=True
+            )
+            return
+        players = get_player_roster(self.db, interaction.guild, role, record["name"])
+        player_lines = "\n".join(
+            f"`{number:02d}`  {player.mention}  —  **{player.display_name}**"
+            for number, player in enumerate(players, start=1)
+        ) or "*No players are currently signed.*"
+        embed = discord.Embed(
+            description=(
+                f"## {record['name']} Roster\n"
+                f"**{len(players):02d} / {record['roster_cap']:02d}**\n\n"
+                f"{player_lines}"
+            ),
+            color=role.color if role.color.value else discord.Color.blurple(),
+            timestamp=discord.utils.utcnow(),
+        )
+        if record["logo_url"]:
+            embed.set_thumbnail(url=record["logo_url"])
+        if interaction.guild.icon:
+            embed.set_author(name=interaction.guild.name, icon_url=interaction.guild.icon.url)
+        else:
+            embed.set_author(name=interaction.guild.name)
+        embed.set_footer(text="Made By EthanCoys")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
     team_group = app_commands.Group(name="team", description="Configure club teams", guild_only=True)
 
@@ -484,4 +522,3 @@ class ClubManagement(commands.Cog):
 
 async def setup(bot: commands.Bot, database: Database) -> None:
     await bot.add_cog(ClubManagement(bot, database))
-
