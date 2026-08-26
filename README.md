@@ -15,6 +15,7 @@ This project is inspired only by common club-management workflows. It does not c
 - `/team add`, `/team remove`, and `/team list` manage selectable teams.
 - `/addteam` creates a team with a name, tagged role, tagged owner, optional uploaded logo, and roster cap (default 22).
 - `/removeteam` removes a configured team without deleting its Discord role.
+- `/roster` lets configured managers and co-managers privately view their automatically detected team's signed roster.
 - `/config_setup` configures signing/release channels and exactly two management roles.
 - Team names autocomplete from the server's saved configuration.
 - SQLite stores teams, configuration, and offers.
