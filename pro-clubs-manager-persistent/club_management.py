@@ -1326,7 +1326,7 @@ class ClubManagement(commands.Cog):
         self, interaction: discord.Interaction, question: str,
         option_1: str, option_2: str,
         option_3: str | None = None, option_4: str | None = None,
-        duration_hours: app_commands.Range[int, 1, 168] = 24,
+        duration: str = "24h",
         allow_multiple: bool = False,
     ):
         if not await self.require_force_access(interaction):
@@ -1339,9 +1339,23 @@ class ClubManagement(commands.Cog):
         if role is None:
             await interaction.response.send_message("The configured poll role no longer exists.", ephemeral=True)
             return
+        match = re.fullmatch(r"\s*(\d+)\s*([hdw])\s*", duration.lower())
+        if not match:
+            await interaction.response.send_message(
+                "Use a duration like `1h`, `12h`, `3d`, or `1w`.", ephemeral=True
+            )
+            return
+        amount = int(match.group(1))
+        unit = match.group(2)
+        hours = amount * {"h": 1, "d": 24, "w": 168}[unit]
+        if hours < 1 or hours > 768:
+            await interaction.response.send_message(
+                "Discord polls can run from 1 hour up to 32 days.", ephemeral=True
+            )
+            return
         poll = discord.Poll(
             question=question[:300],
-            duration=timedelta(hours=duration_hours),
+            duration=timedelta(hours=hours),
             multiple=allow_multiple,
         )
         for answer in (option_1, option_2, option_3, option_4):
