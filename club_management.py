@@ -1,3 +1,4 @@
+import re
 import sqlite3
 
 import discord
@@ -22,6 +23,10 @@ def roster_text(roster: list[discord.Member]) -> str:
     if len(roster) > 20:
         text += f" and {len(roster) - 20} more"
     return text
+
+
+def inline_team_logo(team) -> str:
+    return f"<:clublogo:{team['emoji_id']}> " if team and team["emoji_id"] else ""
 
 
 class OfferView(discord.ui.View):
@@ -144,10 +149,10 @@ class OfferView(discord.ui.View):
             embed = discord.Embed(
                 description=(
                     "## PLAYER SIGNED\n"
-                    f"### {member.mention} / {member.display_name}\n"
-                    f"has signed with {role.mention}\n\n"
+                    f"### {member.mention} / {member.name}\n"
+                    f"has signed with {inline_team_logo(team)}{role.mention}\n\n"
                     "━━━━━━━━━━━━━━━━━━━━\n"
-                    f"- **TEAM** — {role.mention}\n"
+                    f"- **TEAM** — {inline_team_logo(team)}{role.mention}\n"
                     f"- **TEAM OWNER** — {owner_text}\n"
                     f"- **SIGNED BY** — <@{offer['offered_by']}>\n"
                     f"- **ROSTER** — `{len(roster):02d} / {roster_cap:02d}`"
@@ -221,6 +226,20 @@ class ClubManagement(commands.Cog):
             message = "You have more than one configured team role, so I cannot tell which team is making the offer."
         await interaction.response.send_message(message, ephemeral=True)
         return None
+
+    async def create_logo_emoji(
+        self, guild: discord.Guild, team_name: str, logo: discord.Attachment
+    ) -> discord.Emoji | None:
+        try:
+            image = await logo.read()
+            safe_name = re.sub(r"[^a-zA-Z0-9_]", "_", team_name)[:24].strip("_")
+            return await guild.create_custom_emoji(
+                name=f"{safe_name or 'club'}_logo",
+                image=image,
+                reason=f"Inline club logo for {team_name}",
+            )
+        except (discord.Forbidden, discord.HTTPException):
+            return None
 
     async def cog_app_command_error(
         self, interaction: discord.Interaction, error: app_commands.AppCommandError
@@ -337,10 +356,10 @@ class ClubManagement(commands.Cog):
             embed = discord.Embed(
                 description=(
                     "## PLAYER RELEASED\n"
-                    f"### {player.mention} / {player.display_name}\n"
-                    f"was released by {role.mention}\n\n"
+                    f"### {player.mention} / {player.name}\n"
+                    f"was released by {inline_team_logo(record)}{role.mention}\n\n"
                     "━━━━━━━━━━━━━━━━━━━━\n"
-                    f"- **TEAM** — {role.mention}\n"
+                    f"- **TEAM** — {inline_team_logo(record)}{role.mention}\n"
                     f"- **TEAM OWNER** — {owner_text}\n"
                     f"- **ROSTER** — `{len(roster):02d} / {roster_cap:02d}`"
                     f"{reason_text}"
@@ -382,7 +401,7 @@ class ClubManagement(commands.Cog):
             return
         players = get_player_roster(self.db, interaction.guild, role, record["name"])
         player_lines = "\n".join(
-            f"`{number:02d}`  {player.mention}  —  **{player.display_name}**"
+            f"`{number:02d}`  {player.mention}  —  **{player.name}**"
             for number, player in enumerate(players, start=1)
         ) or "*No players are currently signed.*"
         embed = discord.Embed(
@@ -435,6 +454,11 @@ class ClubManagement(commands.Cog):
         except sqlite3.IntegrityError:
             await interaction.response.send_message("That team name or role is already configured.", ephemeral=True)
             return
+        emoji = await self.create_logo_emoji(interaction.guild, name, logo) if logo else None
+        if logo:
+            self.db.update_team_logo(
+                interaction.guild_id, name, logo.url, emoji.id if emoji else None
+            )
         role_note = ""
         if role not in owner.roles:
             try:
@@ -453,7 +477,42 @@ class ClubManagement(commands.Cog):
             embed.set_thumbnail(url=logo.url)
         if role_note:
             embed.description = role_note
+        if logo and emoji is None:
+            embed.add_field(
+                name="Inline logo",
+                value="Logo saved, but the inline logo needs the bot's Manage Expressions permission.",
+                inline=False,
+            )
         await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @app_commands.command(name="setteamlogo", description="Update a team's corner and inline logo")
+    @app_commands.guild_only()
+    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.autocomplete(team=team_autocomplete)
+    async def setteamlogo(
+        self,
+        interaction: discord.Interaction,
+        team: str,
+        logo: discord.Attachment,
+    ):
+        assert interaction.guild
+        record = self.db.team(interaction.guild_id, team)
+        if not record:
+            await interaction.response.send_message("That team is not configured.", ephemeral=True)
+            return
+        if logo.content_type and not logo.content_type.startswith("image/"):
+            await interaction.response.send_message("The logo must be an image file.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        emoji = await self.create_logo_emoji(interaction.guild, record["name"], logo)
+        self.db.update_team_logo(
+            interaction.guild_id, record["name"], logo.url, emoji.id if emoji else None
+        )
+        if emoji:
+            message = f"Logo updated. It will appear inline as {emoji} and in the corner."
+        else:
+            message = "The corner logo was updated, but the inline logo needs the bot's Manage Expressions permission."
+        await interaction.followup.send(message, ephemeral=True)
 
     @app_commands.command(name="removeteam", description="Remove a configured team (Administrator only)")
     @app_commands.guild_only()
@@ -522,4 +581,3 @@ class ClubManagement(commands.Cog):
 
 async def setup(bot: commands.Bot, database: Database) -> None:
     await bot.add_cog(ClubManagement(bot, database))
-
