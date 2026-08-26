@@ -58,6 +58,24 @@ class Database:
                     joined_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     PRIMARY KEY (guild_id, team_name, player_id)
                 );
+
+                CREATE TABLE IF NOT EXISTS ticket_config (
+                    guild_id INTEGER PRIMARY KEY,
+                    panel_channel_id INTEGER NOT NULL,
+                    category_id INTEGER NOT NULL,
+                    support_role_id INTEGER NOT NULL,
+                    problems TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS tickets (
+                    channel_id INTEGER PRIMARY KEY,
+                    guild_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    problem TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'open',
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    closed_at TEXT
+                );
                 """
             )
 
@@ -225,3 +243,65 @@ class Database:
                     (guild_id, team_name),
                 )
             ]
+
+    def configure_tickets(
+        self,
+        guild_id: int,
+        panel_channel_id: int,
+        category_id: int,
+        support_role_id: int,
+        problems: str,
+    ) -> None:
+        with self.connect() as db:
+            db.execute(
+                """
+                INSERT INTO ticket_config
+                    (guild_id, panel_channel_id, category_id, support_role_id, problems)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(guild_id) DO UPDATE SET
+                    panel_channel_id = excluded.panel_channel_id,
+                    category_id = excluded.category_id,
+                    support_role_id = excluded.support_role_id,
+                    problems = excluded.problems
+                """,
+                (guild_id, panel_channel_id, category_id, support_role_id, problems),
+            )
+
+    def ticket_config(self, guild_id: int) -> sqlite3.Row | None:
+        with self.connect() as db:
+            return db.execute(
+                "SELECT * FROM ticket_config WHERE guild_id = ?", (guild_id,)
+            ).fetchone()
+
+    def open_ticket_for_user(self, guild_id: int, user_id: int) -> sqlite3.Row | None:
+        with self.connect() as db:
+            return db.execute(
+                "SELECT * FROM tickets WHERE guild_id = ? AND user_id = ? AND status = 'open'",
+                (guild_id, user_id),
+            ).fetchone()
+
+    def create_ticket(
+        self, channel_id: int, guild_id: int, user_id: int, problem: str
+    ) -> None:
+        with self.connect() as db:
+            db.execute(
+                "INSERT INTO tickets (channel_id, guild_id, user_id, problem) VALUES (?, ?, ?, ?)",
+                (channel_id, guild_id, user_id, problem),
+            )
+
+    def ticket(self, channel_id: int) -> sqlite3.Row | None:
+        with self.connect() as db:
+            return db.execute(
+                "SELECT * FROM tickets WHERE channel_id = ?", (channel_id,)
+            ).fetchone()
+
+    def close_ticket(self, channel_id: int) -> bool:
+        with self.connect() as db:
+            cursor = db.execute(
+                """
+                UPDATE tickets SET status = 'closed', closed_at = CURRENT_TIMESTAMP
+                WHERE channel_id = ? AND status = 'open'
+                """,
+                (channel_id,),
+            )
+            return cursor.rowcount > 0
