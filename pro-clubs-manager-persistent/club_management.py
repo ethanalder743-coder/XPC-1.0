@@ -329,26 +329,20 @@ class ClubManagement(commands.Cog):
         if isinstance(channel, discord.TextChannel):
             roster = get_player_roster(self.db, interaction.guild, role, record["name"])
             roster_cap = record["roster_cap"] if record else 22
+            reason_line = f"\n\n• 📝 **Reason** — {reason}" if reason != "No reason provided" else ""
             embed = discord.Embed(
                 title="Player Released",
                 description=(
                     f"{player.mention}\n"
-                    f"**{player.display_name}** has been released from {role.mention}"
+                    f"**{player.display_name}** has been released\n"
+                    f"from ⚽ {role.mention}\n\n"
+                    f"• 📋 **Roster Cap** - {len(roster)}/{roster_cap}\n\n"
+                    f"• 🛡️ **Actioned By** — {interaction.user.mention}\n"
+                    f"*{interaction.user.display_name}*"
+                    f"{reason_line}"
                 ),
                 color=role.color if role.color.value else discord.Color.red(),
             )
-            embed.add_field(
-                name="• 📋 Roster Cap",
-                value=f"**{len(roster)}/{roster_cap}**",
-                inline=False,
-            )
-            embed.add_field(
-                name="• 🛡️ Actioned By",
-                value=interaction.user.mention,
-                inline=False,
-            )
-            if reason != "No reason provided":
-                embed.add_field(name="• 📝 Reason", value=reason, inline=False)
             if record["logo_url"]:
                 embed.set_thumbnail(url=record["logo_url"])
                 embed.set_author(
