@@ -8,19 +8,13 @@ from database import Database
 
 
 def get_player_roster(database: Database, guild: discord.Guild, role: discord.Role, team_name: str):
-    """Return players only, excluding bots, the owner, and configured club staff."""
-    team = database.team(guild.id, team_name)
-    config = database.config(guild.id)
-    excluded_ids = {team["owner_id"]} if team and team["owner_id"] else set()
-    manager_role_ids = {
-        config["manager_role_1_id"], config["manager_role_2_id"]
-    } if config else set()
-    return [
-        member for member in role.members
-        if not member.bot
-        and member.id not in excluded_ids
-        and not any(member_role.id in manager_role_ids for member_role in member.roles)
-    ]
+    """Return only players recorded after accepting an offer."""
+    members = []
+    for player_id in database.team_member_ids(guild.id, team_name):
+        member = guild.get_member(player_id)
+        if member and not member.bot and role in member.roles:
+            members.append(member)
+    return members
 
 
 def roster_text(roster: list[discord.Member]) -> str:
@@ -89,6 +83,7 @@ class OfferView(discord.ui.View):
         if not self.db.decide_offer(self.offer_id, "accepted"):
             await interaction.followup.send("This offer was already handled.", ephemeral=True)
             return
+        self.db.add_team_member(guild.id, offer["team_name"], member.id)
         await self.finish(interaction, "accepted")
         await interaction.followup.send("Offer accepted — welcome to the club!", ephemeral=True)
         await self.log_signing(guild, member, role, offer)
@@ -307,6 +302,7 @@ class ClubManagement(commands.Cog):
         except discord.Forbidden:
             await interaction.response.send_message("I cannot remove that role. Check my role position.", ephemeral=True)
             return
+        self.db.remove_team_member(interaction.guild.id, record["name"], player.id)
         await interaction.response.send_message(f"Released {player.mention} from {role.mention}.", ephemeral=True)
         config = self.db.config(interaction.guild.id)
         channel = interaction.guild.get_channel(config["release_channel_id"]) if config else None
