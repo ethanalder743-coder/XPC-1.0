@@ -81,6 +81,14 @@ class Database:
                     guild_id INTEGER PRIMARY KEY,
                     role_ids TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS welcome_config (
+                    guild_id INTEGER PRIMARY KEY,
+                    channel_id INTEGER NOT NULL,
+                    banner_path TEXT NOT NULL,
+                    headline TEXT NOT NULL,
+                    subtext TEXT NOT NULL
+                );
                 """
             )
 
@@ -329,3 +337,32 @@ class Database:
         if not row or not row["role_ids"]:
             return set()
         return {int(value) for value in row["role_ids"].split(",") if value}
+
+    def configure_welcome(
+        self,
+        guild_id: int,
+        channel_id: int,
+        banner_path: str,
+        headline: str,
+        subtext: str,
+    ) -> None:
+        with self.connect() as db:
+            db.execute(
+                """
+                INSERT INTO welcome_config
+                    (guild_id, channel_id, banner_path, headline, subtext)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(guild_id) DO UPDATE SET
+                    channel_id = excluded.channel_id,
+                    banner_path = excluded.banner_path,
+                    headline = excluded.headline,
+                    subtext = excluded.subtext
+                """,
+                (guild_id, channel_id, banner_path, headline, subtext),
+            )
+
+    def welcome_config(self, guild_id: int) -> sqlite3.Row | None:
+        with self.connect() as db:
+            return db.execute(
+                "SELECT * FROM welcome_config WHERE guild_id = ?", (guild_id,)
+            ).fetchone()
