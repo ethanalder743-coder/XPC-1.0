@@ -142,8 +142,8 @@ class OfferView(discord.ui.View):
             roster_cap = team["roster_cap"] if team else 22
             owner_text = f"<@{team['owner_id']}>" if team and team["owner_id"] else "Not configured"
             embed = discord.Embed(
-                title="PLAYER SIGNED",
                 description=(
+                    "## PLAYER SIGNED\n"
                     f"### {member.mention} - {member.display_name}\n"
                     f"has signed with {role.mention}\n\n"
                     "━━━━━━━━━━━━━━━━━━━━\n"
@@ -335,8 +335,8 @@ class ClubManagement(commands.Cog):
                 if reason != "No reason provided" else ""
             )
             embed = discord.Embed(
-                title="PLAYER RELEASED",
                 description=(
+                    "## PLAYER RELEASED\n"
                     f"### {player.mention} - {player.display_name}\n"
                     f"was released by {role.mention}\n\n"
                     "━━━━━━━━━━━━━━━━━━━━\n"
