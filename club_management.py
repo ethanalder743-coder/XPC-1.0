@@ -1001,6 +1001,23 @@ class ClubManagement(commands.Cog):
         )
         return False
 
+    async def require_all_rosters_access(self, interaction: discord.Interaction) -> bool:
+        """Allow only the server owner and the configured franchise-owner role."""
+        if not isinstance(interaction.user, discord.Member) or interaction.guild is None:
+            return False
+        if interaction.user.id == interaction.guild.owner_id:
+            return True
+        config = self.db.league_config(interaction.guild_id)
+        if config and config["franchise_role_id"] and any(
+            role.id == config["franchise_role_id"] for role in interaction.user.roles
+        ):
+            return True
+        await interaction.response.send_message(
+            "Only the server owner and the configured Franchise Owner role can view every team's roster.",
+            ephemeral=True,
+        )
+        return False
+
     def managed_team_for(self, member: discord.Member):
         role_ids = {role.id for role in member.roles}
         matches = [
@@ -1370,6 +1387,48 @@ class ClubManagement(commands.Cog):
             embed.set_author(name=interaction.guild.name)
         embed.set_footer(text="Made By EthanCoys")
         await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @app_commands.command(name="allrosters", description="View every configured team's signed roster")
+    @app_commands.guild_only()
+    async def allrosters(self, interaction: discord.Interaction):
+        if not await self.require_all_rosters_access(interaction):
+            return
+        assert interaction.guild
+        teams = self.db.teams(interaction.guild.id)
+        if not teams:
+            await interaction.response.send_message(
+                "No teams have been configured yet.", ephemeral=True
+            )
+            return
+
+        embeds: list[discord.Embed] = []
+        for record in teams:
+            role = interaction.guild.get_role(record["role_id"])
+            players = (
+                get_player_roster(self.db, interaction.guild, role, record["name"])
+                if role else []
+            )
+            player_lines = "\n".join(
+                f"`{number:02d}` {player.mention} / **{player.name}**"
+                for number, player in enumerate(players, start=1)
+            ) or "*No players are currently signed.*"
+            embed = discord.Embed(
+                title=f"{record['name']} Roster",
+                description=(
+                    f"**{len(players):02d} / {record['roster_cap']:02d}**\n\n{player_lines}"
+                ),
+                color=(
+                    role.color if role and role.color.value else discord.Color.blurple()
+                ),
+            )
+            if record["logo_url"]:
+                embed.set_thumbnail(url=record["logo_url"])
+            embed.set_footer(text="Made By EthanCoys")
+            embeds.append(embed)
+
+        await interaction.response.send_message(embeds=embeds[:10], ephemeral=True)
+        for index in range(10, len(embeds), 10):
+            await interaction.followup.send(embeds=embeds[index:index + 10], ephemeral=True)
 
     @app_commands.command(name="totwsetweek", description="Set the active Team of the Week number")
     @app_commands.guild_only()
@@ -2101,7 +2160,7 @@ class ClubManagement(commands.Cog):
     @app_commands.guild_only()
     async def help_command(self, interaction: discord.Interaction):
         text = (
-            "**Clubs:** `/offer` `/release` `/roster` `/myoffers` `/canceloffer` `/signingremoverole`\n"
+            "**Clubs:** `/offer` `/release` `/roster` `/allrosters` `/myoffers` `/canceloffer` `/signingremoverole`\n"
             "**Transfers:** `/transfer` `/loan` `/endloan` `/recallloan` `/loans` `/openwindow` `/closewindow`\n"
             "**Budgets:** `/budgetsetup` `/setbudget` `/budgets`\n"
             "**League:** `/result` `/standings` `/endseason`\n"
