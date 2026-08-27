@@ -191,6 +191,7 @@ class Dashboard:
         ]
         teams = [{"name": t["name"], "role_id": str(t["role_id"]), "budget": self.db.team_budget(guild_id, t["name"])} for t in self.db.teams(guild_id)]
         roles = [{"id": str(role.id), "name": role.name} for role in guild.roles if not role.is_default() and not role.managed]
+        channels = [{"id": str(channel.id), "name": channel.name} for channel in guild.text_channels]
         members = [{"id": str(member.id), "name": member.display_name} for member in guild.members if not member.bot]
         logs = [dict(row) for row in self.db.audit_entries(guild_id)]
         fixtures = [dict(row) for row in self.db.fixtures(guild_id)]
@@ -201,7 +202,19 @@ class Dashboard:
             [team["name"] for team in teams], results,
             self.db.standings_adjustments(guild_id),
         )
-        return web.json_response({"commands": commands, "teams": teams, "roles": roles, "members": members, "logs": logs, "fixtures": fixtures, "trophies": trophies, "trophy_winners": winners, "results": results, "standings": standings, "transfer_window_open": self.db.transfer_window_open(guild_id)})
+        core = self.db.config(guild_id)
+        league = self.db.league_config(guild_id)
+        bot_log = self.db.bot_log_config(guild_id)
+        configuration = {
+            "signing_channel_id": str(core["signing_channel_id"]) if core and core["signing_channel_id"] else "",
+            "release_channel_id": str(core["release_channel_id"]) if core and core["release_channel_id"] else "",
+            "manager_role_1_id": str(core["manager_role_1_id"]) if core and core["manager_role_1_id"] else "",
+            "manager_role_2_id": str(core["manager_role_2_id"]) if core and core["manager_role_2_id"] else "",
+            "signing_remove_role_id": str(core["signing_remove_role_id"]) if core and core["signing_remove_role_id"] else "",
+            "franchise_role_id": str(league["franchise_role_id"]) if league and league["franchise_role_id"] else "",
+            "bot_log_channel_id": str(bot_log["channel_id"]) if bot_log else "",
+        }
+        return web.json_response({"commands": commands, "teams": teams, "roles": roles, "channels": channels, "members": members, "configuration": configuration, "logs": logs, "fixtures": fixtures, "trophies": trophies, "trophy_winners": winners, "results": results, "standings": standings, "transfer_window_open": self.db.transfer_window_open(guild_id)})
 
     async def public_league(self, request):
         guild_id = int(request.query.get("guild_id", "0"))
@@ -352,6 +365,46 @@ class Dashboard:
         self.db.add_audit(guild_id, None, "Dashboard table reset", team_name)
         return web.json_response({"ok": True})
 
+    async def server_setup(self, request):
+        self.require_api(request)
+        data = await request.json()
+        guild_id = int(data["guild_id"])
+        guild = self.bot.get_guild(guild_id)
+        if guild is None:
+            raise web.HTTPNotFound(text="Server not found")
+        def role(key): return guild.get_role(int(data.get(key) or 0))
+        def channel(key): return guild.get_channel(int(data.get(key) or 0))
+        signing, release = channel("signing_channel_id"), channel("release_channel_id")
+        manager, co_manager = role("manager_role_1_id"), role("manager_role_2_id")
+        franchise, remove_role = role("franchise_role_id"), role("signing_remove_role_id")
+        bot_log = channel("bot_log_channel_id")
+        if not all((signing, release, manager, co_manager, franchise, bot_log)):
+            raise web.HTTPBadRequest(text="Choose every required channel and role.")
+        if manager.id == co_manager.id:
+            raise web.HTTPBadRequest(text="Manager and Co-Manager must be different roles.")
+        self.db.configure_guild(guild_id, signing.id, release.id, manager.id, co_manager.id)
+        self.db.set_signing_remove_role(guild_id, remove_role.id if remove_role else None)
+        self.db.configure_franchise_role(guild_id, franchise.id)
+        self.db.configure_bot_log(guild_id, bot_log.id)
+        self.db.add_audit(guild_id, None, "Dashboard server setup", "Channels and management roles updated")
+        return web.json_response({"ok": True})
+
+    async def edit_team(self, request):
+        self.require_api(request)
+        data = await request.json(); guild_id = int(data["guild_id"]); guild = self.bot.get_guild(guild_id)
+        if guild is None: raise web.HTTPNotFound(text="Server not found")
+        old_name = str(data.get("old_name", "")); new_name = str(data.get("name", "")).strip()
+        current = self.db.team(guild_id, old_name); role = guild.get_role(int(data.get("role_id") or 0)); owner = guild.get_member(int(data.get("owner_id") or 0)); cap = int(data.get("roster_cap", 22))
+        if not current or not new_name or not role or not owner or not 1 <= cap <= 99: raise web.HTTPBadRequest(text="Choose a valid team, role, owner and roster limit.")
+        try: self.db.update_team(guild_id, current["name"], new_name, role.id, owner.id, cap)
+        except Exception: raise web.HTTPBadRequest(text="That team name or role is already in use.")
+        self.db.add_audit(guild_id, None, "Dashboard team edited", f"{old_name} -> {new_name}"); return web.json_response({"ok": True})
+
+    async def delete_team(self, request):
+        self.require_api(request); data = await request.json(); guild_id = int(data["guild_id"]); name = str(data.get("team", ""))
+        if not self.db.remove_team(guild_id, name): raise web.HTTPNotFound(text="Team not found")
+        self.db.add_audit(guild_id, None, "Dashboard team removed", name); return web.json_response({"ok": True})
+
     async def budget(self, request):
         self.require_api(request); data = await request.json(); guild_id = int(data["guild_id"]); amount = max(0, int(data["amount"])); team = self.db.team(guild_id, str(data["team"]))
         if not team: raise web.HTTPBadRequest(text="Unknown team")
@@ -395,6 +448,6 @@ class Dashboard:
 
     async def start(self) -> None:
         app = web.Application(client_max_size=1024 * 1024)
-        app.add_routes([web.get("/", self.home), web.get("/login", self.login_page), web.post("/login", self.login), web.post("/logout", self.logout), web.get("/terms", self.terms), web.get("/terms-of-service", self.terms), web.get("/privacy", self.privacy), web.get("/privacy-policy", self.privacy), web.post("/api/desktop/login", self.desktop_login), web.get("/api/guilds", self.guilds), web.get("/api/state", self.state), web.get("/api/public/league", self.public_league), web.post("/api/toggle", self.toggle), web.post("/api/toggle-all", self.toggle_all), web.post("/api/result-update", self.update_result), web.post("/api/result-delete", self.delete_result), web.post("/api/standings-update", self.update_standings), web.post("/api/standings-reset", self.reset_standings), web.post("/api/budget", self.budget), web.post("/api/team", self.add_team), web.post("/api/team-logo", self.team_logo), web.post("/api/fixture", self.add_fixture), web.post("/api/trophy", self.add_trophy), web.post("/api/trophy-award", self.award_trophy), web.post("/api/window", self.window), web.get("/manifest.json", self.manifest), web.get("/sw.js", self.service_worker)])
+        app.add_routes([web.get("/", self.home), web.get("/login", self.login_page), web.post("/login", self.login), web.post("/logout", self.logout), web.get("/terms", self.terms), web.get("/terms-of-service", self.terms), web.get("/privacy", self.privacy), web.get("/privacy-policy", self.privacy), web.post("/api/desktop/login", self.desktop_login), web.get("/api/guilds", self.guilds), web.get("/api/state", self.state), web.get("/api/public/league", self.public_league), web.post("/api/toggle", self.toggle), web.post("/api/toggle-all", self.toggle_all), web.post("/api/result-update", self.update_result), web.post("/api/result-delete", self.delete_result), web.post("/api/standings-update", self.update_standings), web.post("/api/standings-reset", self.reset_standings), web.post("/api/server-setup", self.server_setup), web.post("/api/budget", self.budget), web.post("/api/team", self.add_team), web.post("/api/team-edit", self.edit_team), web.post("/api/team-delete", self.delete_team), web.post("/api/team-logo", self.team_logo), web.post("/api/fixture", self.add_fixture), web.post("/api/trophy", self.add_trophy), web.post("/api/trophy-award", self.award_trophy), web.post("/api/window", self.window), web.get("/manifest.json", self.manifest), web.get("/sw.js", self.service_worker)])
         self.runner = web.AppRunner(app); await self.runner.setup(); site = web.TCPSite(self.runner, "0.0.0.0", int(os.getenv("PORT", "8080"))); await site.start()
 
