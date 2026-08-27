@@ -1386,7 +1386,7 @@ class ClubManagement(commands.Cog):
         else:
             embed.set_author(name=interaction.guild.name)
         embed.set_footer(text="Made By EthanCoys")
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.response.send_message(embed=embed)
 
     @app_commands.command(name="allrosters", description="View every configured team's signed roster")
     @app_commands.guild_only()
@@ -1397,7 +1397,7 @@ class ClubManagement(commands.Cog):
         teams = self.db.teams(interaction.guild.id)
         if not teams:
             await interaction.response.send_message(
-                "No teams have been configured yet.", ephemeral=True
+                "No teams have been configured yet."
             )
             return
 
@@ -1426,9 +1426,9 @@ class ClubManagement(commands.Cog):
             embed.set_footer(text="Made By EthanCoys")
             embeds.append(embed)
 
-        await interaction.response.send_message(embeds=embeds[:10], ephemeral=True)
+        await interaction.response.send_message(embeds=embeds[:10])
         for index in range(10, len(embeds), 10):
-            await interaction.followup.send(embeds=embeds[index:index + 10], ephemeral=True)
+            await interaction.followup.send(embeds=embeds[index:index + 10])
 
     @app_commands.command(name="totwsetweek", description="Set the active Team of the Week number")
     @app_commands.guild_only()
@@ -1439,42 +1439,6 @@ class ClubManagement(commands.Cog):
         self.db.set_totw_week(interaction.guild_id, week)
         await interaction.response.send_message(
             f"TOTW submissions are now open for week **{week}**.", ephemeral=True
-        )
-
-    @app_commands.command(name="totwtestdata", description="Create a complete fake TOTW lineup for testing")
-    @app_commands.guild_only()
-    @app_commands.checks.has_permissions(administrator=True)
-    async def totwtestdata(self, interaction: discord.Interaction):
-        week = self.db.totw_week(interaction.guild_id)
-        self.db.clear_totw_test_submissions(interaction.guild_id, week)
-        team_names = [team["name"] for team in self.db.teams(interaction.guild_id)] or ["Test FC"]
-        positions = ["GK", "CB/FB", "CB/FB", "CB/FB", "CDM", "CDM", "CAM", "WM", "WM", "ST", "ST"]
-        for index, position in enumerate(positions, 1):
-            summary = round(9.8 - index * 0.12, 1)
-            primary = round(9.6 - index * 0.10, 1)
-            defending = round(9.4 - index * 0.08, 1) if position == "CDM" else None
-            score = summary * 0.60 + primary * 0.40
-            if position == "CDM":
-                score = summary * 0.50 + primary * 0.25 + defending * 0.25
-            self.db.save_totw_submission(
-                interaction.guild_id, week, -index,
-                team_names[(index - 1) % len(team_names)], position,
-                summary, primary, defending, round(score, 3),
-            )
-        await interaction.response.send_message(
-            f"Added **11 fake players** for Week **{week}**. Run `/totwlist` to test the full 3-5-2 lineup. Use `/totwcleartest` when finished.",
-            ephemeral=True,
-        )
-
-    @app_commands.command(name="totwcleartest", description="Remove fake TOTW test players from the active week")
-    @app_commands.guild_only()
-    @app_commands.checks.has_permissions(administrator=True)
-    async def totwcleartest(self, interaction: discord.Interaction):
-        week = self.db.totw_week(interaction.guild_id)
-        removed = self.db.clear_totw_test_submissions(interaction.guild_id, week)
-        await interaction.response.send_message(
-            f"Removed **{removed}** fake TOTW test entries from Week **{week}**. Real submissions were not changed.",
-            ephemeral=True,
         )
 
     @app_commands.command(name="uploadstats", description="Upload your FC performance screenshots for TOTW")
@@ -1551,6 +1515,9 @@ class ClubManagement(commands.Cog):
             primary_rating,
             defending_rating,
             round(score, 3),
+            summary.url,
+            stats.url,
+            defending.url if defending else None,
         )
         extra = f" | Defending {defending_rating:.1f}" if defending_rating is not None else ""
         await interaction.followup.send(
@@ -1558,6 +1525,69 @@ class ClubManagement(commands.Cog):
             f"Summary {summary_rating:.1f} | {label_by_position[position]} {primary_rating:.1f}{extra} | TOTW score **{score:.2f}**",
             ephemeral=True,
         )
+
+    @app_commands.command(name="statsuploads", description="Show the screenshots submitted for the active TOTW week")
+    @app_commands.guild_only()
+    async def statsuploads(self, interaction: discord.Interaction):
+        if not isinstance(interaction.user, discord.Member):
+            return
+        config = self.db.league_config(interaction.guild_id)
+        franchise_role_id = config["franchise_role_id"] if config else None
+        if not franchise_role_id or not any(
+            role.id == franchise_role_id for role in interaction.user.roles
+        ):
+            await interaction.response.send_message(
+                "Only members with the configured Franchise Owner role can view stat uploads.",
+                ephemeral=True,
+            )
+            return
+
+        week = self.db.totw_week(interaction.guild_id)
+        submissions = self.db.totw_submissions(interaction.guild_id, week)
+        if not submissions:
+            await interaction.response.send_message(
+                f"No stats have been uploaded for Week **{week}** yet."
+            )
+            return
+
+        await interaction.response.send_message(
+            embed=discord.Embed(
+                title=f"TOTW STAT UPLOADS — WEEK {week}",
+                description=f"**{len(submissions)}** player(s) have submitted their screenshots.",
+                color=discord.Color.blurple(),
+            )
+        )
+        for row in submissions:
+            details = discord.Embed(
+                title=f"{row['position_group']} — {row['team_name']}",
+                description=(
+                    f"Player: <@{row['user_id']}>\n"
+                    f"Summary: **{row['summary_rating']:.1f}**\n"
+                    f"Main stat: **{row['primary_rating']:.1f}**\n"
+                    + (f"Defending: **{row['defending_rating']:.1f}**\n" if row["defending_rating"] is not None else "")
+                    + f"TOTW score: **{row['score']:.2f}**"
+                ),
+                color=discord.Color.blurple(),
+            )
+            details.set_footer(text=f"Submitted by @{interaction.guild.get_member(row['user_id']).name}" if interaction.guild.get_member(row["user_id"]) else f"User ID {row['user_id']}")
+            await interaction.followup.send(embed=details)
+            image_rows = (
+                ("Summary screenshot", row["summary_url"]),
+                ("Main stats screenshot", row["stats_url"]),
+                ("Defending screenshot", row["defending_url"]),
+            )
+            image_embeds = []
+            for title, url in image_rows:
+                if url:
+                    image_embed = discord.Embed(title=title, color=discord.Color.dark_grey())
+                    image_embed.set_image(url=url)
+                    image_embeds.append(image_embed)
+            if image_embeds:
+                await interaction.followup.send(embeds=image_embeds)
+            else:
+                await interaction.followup.send(
+                    f"No saved screenshots are available for <@{row['user_id']}> because this submission was made before image saving was added."
+                )
 
     @app_commands.command(name="totwlist", description="Show the current 3-5-2 Team of the Week")
     @app_commands.guild_only()
@@ -1579,10 +1609,7 @@ class ClubManagement(commands.Cog):
             for index in range(count):
                 if index < len(candidates):
                     row = candidates[index]
-                    player_name = (
-                        f"**Test Player {abs(row['user_id'])}**"
-                        if row["user_id"] < 0 else f"<@{row['user_id']}>"
-                    )
+                    player_name = f"<@{row['user_id']}>"
                     lines.append(
                         f"**{label}**  {player_name}  -  {row['team_name']}  -  `{row['score']:.2f}`"
                     )
@@ -2170,11 +2197,11 @@ class ClubManagement(commands.Cog):
             "**Community:** `/quicksetup` `/poll` `/pollconfig` `/ticketsetup` `/applicationsetup` `/rolesaversetup` `/welcomesetup` `/rulesembed`\n"
             "**Moderation:** `/moderationsetup` `/warn` `/warnings` `/kick` `/ban` `/timeout` `/purge`\n"
             "**Safety & recovery:** `/channelbackup` `/channelbackups` `/restorechannel` `/invites`\n"
-            "**TOTW:** `/uploadstats` `/totwlist` `/totwsetweek` `/totwtestdata` `/totwcleartest`"
+            "**TOTW:** `/uploadstats` `/statsuploads` `/totwlist` `/totwsetweek`"
         )
         embed = discord.Embed(title="XPC COMMAND HELP", description=text, color=discord.Color.blurple())
         embed.set_footer(text="Made By EthanCoys")
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.response.send_message(embed=embed)
 
     team_group = app_commands.Group(name="team", description="Configure club teams", guild_only=True)
 
@@ -2237,7 +2264,7 @@ class ClubManagement(commands.Cog):
                 value="Logo saved, but the inline logo needs the bot's Manage Expressions permission.",
                 inline=False,
             )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.response.send_message(embed=embed)
 
     @app_commands.command(name="setteamlogo", description="Update a team's corner and inline logo")
     @app_commands.guild_only()
@@ -2288,7 +2315,7 @@ class ClubManagement(commands.Cog):
         except sqlite3.IntegrityError:
             await interaction.response.send_message("That team name or role is already configured.", ephemeral=True)
             return
-        await interaction.response.send_message(f"Added **{name.strip()}** using {role.mention}.", ephemeral=True)
+        await interaction.response.send_message(f"Added **{name.strip()}** using {role.mention}.")
 
     @team_group.command(name="remove", description="Remove a configured team")
     @app_commands.checks.has_permissions(administrator=True)
@@ -2302,7 +2329,7 @@ class ClubManagement(commands.Cog):
     async def team_list(self, interaction: discord.Interaction):
         teams = self.db.teams(interaction.guild_id)
         text = "\n".join(f"- **{row['name']}** — <@&{row['role_id']}>" for row in teams)
-        await interaction.response.send_message(text or "No teams are configured yet.", ephemeral=True)
+        await interaction.response.send_message(text or "No teams are configured yet.")
 
     @app_commands.command(name="config_setup", description="Set log channels and the two management roles")
     @app_commands.guild_only()
@@ -2329,7 +2356,6 @@ class ClubManagement(commands.Cog):
             f"Signing logs: {signing_channel.mention}\n"
             f"Release logs: {release_channel.mention}\n"
             f"Management roles: {manager_role_1.mention} and {manager_role_2.mention}",
-            ephemeral=True,
         )
 
     @app_commands.command(name="quicksetup", description="Guided Yes/No setup using channel and role selectors")
@@ -2340,7 +2366,6 @@ class ClubManagement(commands.Cog):
         await interaction.response.send_message(
             embed=wizard.question_embed(),
             view=QuickSetupView(wizard),
-            ephemeral=True,
         )
 
     @app_commands.command(name="signingremoverole", description="Choose the role removed automatically when a player signs")
