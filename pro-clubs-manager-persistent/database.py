@@ -1203,6 +1203,30 @@ class Database:
         with self.connect() as db:
             return list(db.execute("SELECT * FROM match_results WHERE guild_id = ? ORDER BY created_at", (guild_id,)))
 
+    def result(self, guild_id: int, result_id: int) -> sqlite3.Row | None:
+        with self.connect() as db:
+            return db.execute(
+                "SELECT * FROM match_results WHERE guild_id = ? AND id = ?",
+                (guild_id, result_id),
+            ).fetchone()
+
+    def update_result(
+        self, guild_id: int, result_id: int, home_score: int, away_score: int
+    ) -> bool:
+        with self.connect() as db:
+            return db.execute(
+                """UPDATE match_results SET home_score = ?, away_score = ?
+                WHERE guild_id = ? AND id = ?""",
+                (home_score, away_score, guild_id, result_id),
+            ).rowcount > 0
+
+    def delete_result(self, guild_id: int, result_id: int) -> bool:
+        with self.connect() as db:
+            return db.execute(
+                "DELETE FROM match_results WHERE guild_id = ? AND id = ?",
+                (guild_id, result_id),
+            ).rowcount > 0
+
     def end_season(self, guild_id: int) -> None:
         with self.connect() as db:
             for table in ("match_results", "offers", "transfers", "loans", "team_members", "totw_submissions"):
