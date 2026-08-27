@@ -143,7 +143,16 @@ class Dashboard:
 
     async def guilds(self, request):
         self.require_api(request)
-        return web.json_response({"guilds": [{"id": str(g.id), "name": g.name} for g in self.bot.guilds]})
+        return web.json_response({"guilds": [
+            {
+                "id": str(g.id),
+                "name": g.name,
+                "icon_url": str(g.icon.url) if g.icon else None,
+                "member_count": g.member_count or len(g.members),
+                "owner_id": str(g.owner_id),
+            }
+            for g in sorted(self.bot.guilds, key=lambda item: item.name.casefold())
+        ]})
 
     async def state(self, request):
         self.require_api(request)
@@ -152,7 +161,18 @@ class Dashboard:
         if guild is None:
             raise web.HTTPNotFound(text="Server not found")
         statuses = self.db.command_statuses(guild_id)
-        commands = [{"name": c.qualified_name, "description": c.description, "enabled": statuses.get(c.qualified_name, True)} for c in self.bot.tree.walk_commands() if getattr(c, "parent", None) is None]
+        commands = [
+            {
+                "name": command.qualified_name,
+                "description": command.description,
+                "enabled": statuses.get(command.qualified_name, True),
+                "category": command.qualified_name.split()[0].title(),
+            }
+            for command in sorted(
+                (item for item in self.bot.tree.walk_commands() if not hasattr(item, "commands")),
+                key=lambda item: item.qualified_name,
+            )
+        ]
         teams = [{"name": t["name"], "role_id": str(t["role_id"]), "budget": self.db.team_budget(guild_id, t["name"])} for t in self.db.teams(guild_id)]
         roles = [{"id": str(role.id), "name": role.name} for role in guild.roles if not role.is_default() and not role.managed]
         members = [{"id": str(member.id), "name": member.display_name} for member in guild.members if not member.bot]
@@ -214,6 +234,28 @@ class Dashboard:
         enabled = bool(data["enabled"]); self.db.set_command_enabled(guild_id, name, enabled); self.db.add_audit(guild_id, None, "Dashboard command toggle", f"/{name} {'enabled' if enabled else 'disabled'}")
         return web.json_response({"ok": True})
 
+    async def toggle_all(self, request):
+        self.require_api(request)
+        data = await request.json()
+        guild_id = int(data["guild_id"])
+        if self.bot.get_guild(guild_id) is None:
+            raise web.HTTPNotFound(text="Server not found")
+        enabled = bool(data["enabled"])
+        names = [
+            command.qualified_name
+            for command in self.bot.tree.walk_commands()
+            if not hasattr(command, "commands")
+        ]
+        for name in names:
+            self.db.set_command_enabled(guild_id, name, enabled)
+        self.db.add_audit(
+            guild_id,
+            None,
+            "Dashboard all commands",
+            f"{len(names)} commands {'enabled' if enabled else 'disabled'}",
+        )
+        return web.json_response({"ok": True, "count": len(names)})
+
     async def budget(self, request):
         self.require_api(request); data = await request.json(); guild_id = int(data["guild_id"]); amount = max(0, int(data["amount"])); team = self.db.team(guild_id, str(data["team"]))
         if not team: raise web.HTTPBadRequest(text="Unknown team")
@@ -257,6 +299,6 @@ class Dashboard:
 
     async def start(self) -> None:
         app = web.Application(client_max_size=1024 * 1024)
-        app.add_routes([web.get("/", self.home), web.get("/login", self.login_page), web.post("/login", self.login), web.post("/logout", self.logout), web.get("/terms", self.terms), web.get("/terms-of-service", self.terms), web.get("/privacy", self.privacy), web.get("/privacy-policy", self.privacy), web.post("/api/desktop/login", self.desktop_login), web.get("/api/guilds", self.guilds), web.get("/api/state", self.state), web.get("/api/public/league", self.public_league), web.post("/api/toggle", self.toggle), web.post("/api/budget", self.budget), web.post("/api/team", self.add_team), web.post("/api/team-logo", self.team_logo), web.post("/api/fixture", self.add_fixture), web.post("/api/trophy", self.add_trophy), web.post("/api/trophy-award", self.award_trophy), web.post("/api/window", self.window), web.get("/manifest.json", self.manifest), web.get("/sw.js", self.service_worker)])
+        app.add_routes([web.get("/", self.home), web.get("/login", self.login_page), web.post("/login", self.login), web.post("/logout", self.logout), web.get("/terms", self.terms), web.get("/terms-of-service", self.terms), web.get("/privacy", self.privacy), web.get("/privacy-policy", self.privacy), web.post("/api/desktop/login", self.desktop_login), web.get("/api/guilds", self.guilds), web.get("/api/state", self.state), web.get("/api/public/league", self.public_league), web.post("/api/toggle", self.toggle), web.post("/api/toggle-all", self.toggle_all), web.post("/api/budget", self.budget), web.post("/api/team", self.add_team), web.post("/api/team-logo", self.team_logo), web.post("/api/fixture", self.add_fixture), web.post("/api/trophy", self.add_trophy), web.post("/api/trophy-award", self.award_trophy), web.post("/api/window", self.window), web.get("/manifest.json", self.manifest), web.get("/sw.js", self.service_worker)])
         self.runner = web.AppRunner(app); await self.runner.setup(); site = web.TCPSite(self.runner, "0.0.0.0", int(os.getenv("PORT", "8080"))); await site.start()
 
