@@ -293,6 +293,19 @@ class Database:
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );
 
+                CREATE TABLE IF NOT EXISTS standings_adjustments (
+                    guild_id INTEGER NOT NULL,
+                    team_name TEXT NOT NULL COLLATE NOCASE,
+                    played_delta INTEGER NOT NULL DEFAULT 0,
+                    won_delta INTEGER NOT NULL DEFAULT 0,
+                    drawn_delta INTEGER NOT NULL DEFAULT 0,
+                    lost_delta INTEGER NOT NULL DEFAULT 0,
+                    gf_delta INTEGER NOT NULL DEFAULT 0,
+                    ga_delta INTEGER NOT NULL DEFAULT 0,
+                    points_delta INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (guild_id, team_name)
+                );
+
                 CREATE TABLE IF NOT EXISTS command_status (
                     guild_id INTEGER NOT NULL,
                     command_name TEXT NOT NULL,
@@ -1227,9 +1240,55 @@ class Database:
                 (guild_id, result_id),
             ).rowcount > 0
 
+    def standings_adjustments(self, guild_id: int) -> dict[str, sqlite3.Row]:
+        with self.connect() as db:
+            rows = db.execute(
+                "SELECT * FROM standings_adjustments WHERE guild_id = ?", (guild_id,)
+            ).fetchall()
+        return {row["team_name"].casefold(): row for row in rows}
+
+    def set_standings_adjustment(
+        self,
+        guild_id: int,
+        team_name: str,
+        played_delta: int,
+        won_delta: int,
+        drawn_delta: int,
+        lost_delta: int,
+        gf_delta: int,
+        ga_delta: int,
+        points_delta: int,
+    ) -> None:
+        with self.connect() as db:
+            db.execute(
+                """INSERT INTO standings_adjustments
+                (guild_id, team_name, played_delta, won_delta, drawn_delta,
+                 lost_delta, gf_delta, ga_delta, points_delta)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(guild_id, team_name) DO UPDATE SET
+                    played_delta=excluded.played_delta,
+                    won_delta=excluded.won_delta,
+                    drawn_delta=excluded.drawn_delta,
+                    lost_delta=excluded.lost_delta,
+                    gf_delta=excluded.gf_delta,
+                    ga_delta=excluded.ga_delta,
+                    points_delta=excluded.points_delta""",
+                (
+                    guild_id, team_name, played_delta, won_delta, drawn_delta,
+                    lost_delta, gf_delta, ga_delta, points_delta,
+                ),
+            )
+
+    def clear_standings_adjustment(self, guild_id: int, team_name: str) -> bool:
+        with self.connect() as db:
+            return db.execute(
+                "DELETE FROM standings_adjustments WHERE guild_id = ? AND team_name = ?",
+                (guild_id, team_name),
+            ).rowcount > 0
+
     def end_season(self, guild_id: int) -> None:
         with self.connect() as db:
-            for table in ("match_results", "offers", "transfers", "loans", "team_members", "totw_submissions"):
+            for table in ("match_results", "standings_adjustments", "offers", "transfers", "loans", "team_members", "totw_submissions"):
                 db.execute(f"DELETE FROM {table} WHERE guild_id = ?", (guild_id,))
             config = db.execute("SELECT starting_budget FROM budget_config WHERE guild_id = ?", (guild_id,)).fetchone()
             starting = int(config["starting_budget"]) if config else 0
