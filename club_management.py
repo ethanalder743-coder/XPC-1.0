@@ -152,12 +152,21 @@ class OfferView(discord.ui.View):
             )
             return
 
+        config = self.db.config(guild.id)
+        remove_role = guild.get_role(config["signing_remove_role_id"]) if config and config["signing_remove_role_id"] else None
+        remove_warning = None
+        if remove_role and remove_role in member.roles:
+            try:
+                await member.remove_roles(remove_role, reason=f"Signed for {offer['team_name']}")
+            except discord.Forbidden:
+                remove_warning = f" I could not remove {remove_role.mention}; put the bot role above it."
+
         if not self.db.decide_offer(self.offer_id, "accepted"):
             await interaction.followup.send("This offer was already handled.", ephemeral=True)
             return
         self.db.add_team_member(guild.id, offer["team_name"], member.id)
         await self.finish(interaction, "accepted")
-        await interaction.followup.send("Offer accepted.", ephemeral=True)
+        await interaction.followup.send("Offer accepted." + (remove_warning or ""), ephemeral=True)
         await self.log_signing(guild, member, role, offer)
 
     async def deny(self, interaction: discord.Interaction) -> None:
@@ -1095,6 +1104,14 @@ class ClubManagement(commands.Cog):
         except discord.Forbidden:
             await interaction.followup.send("I cannot assign that role. Check my role position.", ephemeral=True)
             return
+        config = self.db.config(interaction.guild.id)
+        remove_role = interaction.guild.get_role(config["signing_remove_role_id"]) if config and config["signing_remove_role_id"] else None
+        remove_warning = ""
+        if remove_role and remove_role in player.roles:
+            try:
+                await player.remove_roles(remove_role, reason=f"Force signed to {record['name']} by {interaction.user}")
+            except discord.Forbidden:
+                remove_warning = f" I could not remove {remove_role.mention}; put the bot role above it."
         offer_id = self.db.create_offer(
             interaction.guild.id,
             player.id,
@@ -1110,7 +1127,7 @@ class ClubManagement(commands.Cog):
             interaction.guild, player, role, offer
         )
         await interaction.followup.send(
-            f"Force signed {player.mention} to {role.mention}.", ephemeral=True
+            f"Force signed {player.mention} to {role.mention}.{remove_warning}", ephemeral=True
         )
 
     @app_commands.command(name="forcerelease", description="Force release a player from any configured team")
@@ -1937,7 +1954,7 @@ class ClubManagement(commands.Cog):
     @app_commands.guild_only()
     async def help_command(self, interaction: discord.Interaction):
         text = (
-            "**Clubs:** `/offer` `/release` `/roster` `/myoffers` `/canceloffer`\n"
+            "**Clubs:** `/offer` `/release` `/roster` `/myoffers` `/canceloffer` `/signingremoverole`\n"
             "**Transfers:** `/transfer` `/loan` `/endloan` `/recallloan` `/loans` `/openwindow` `/closewindow`\n"
             "**Budgets:** `/budgetsetup` `/setbudget` `/budgets`\n"
             "**League:** `/result` `/standings` `/endseason`\n"
@@ -2106,6 +2123,22 @@ class ClubManagement(commands.Cog):
             f"Signing logs: {signing_channel.mention}\n"
             f"Release logs: {release_channel.mention}\n"
             f"Management roles: {manager_role_1.mention} and {manager_role_2.mention}",
+            ephemeral=True,
+        )
+
+    @app_commands.command(name="signingremoverole", description="Choose the role removed automatically when a player signs")
+    @app_commands.guild_only()
+    @app_commands.checks.has_permissions(administrator=True)
+    async def signingremoverole(self, interaction: discord.Interaction, role: discord.Role):
+        if role.is_default() or role.managed:
+            await interaction.response.send_message("Choose a normal server role.", ephemeral=True)
+            return
+        if not self.db.config(interaction.guild_id):
+            await interaction.response.send_message("Run `/config_setup` first.", ephemeral=True)
+            return
+        self.db.set_signing_remove_role(interaction.guild_id, role.id)
+        await interaction.response.send_message(
+            f"{role.mention} will now be removed automatically whenever a player accepts an offer or is force-signed. Put the bot role above this role.",
             ephemeral=True,
         )
 
