@@ -544,6 +544,153 @@ class ApplicationPanelView(discord.ui.View):
         self.add_item(ApplicationTypeSelect(bot, database))
 
 
+class QuickSetupView(discord.ui.View):
+    def __init__(self, wizard) -> None:
+        super().__init__(timeout=600)
+        self.wizard = wizard
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.wizard.owner_id:
+            await interaction.response.send_message("Only the administrator who started Quick Setup can use this panel.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Yes", style=discord.ButtonStyle.success)
+    async def yes(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.wizard.start_feature(interaction)
+
+    @discord.ui.button(label="No", style=discord.ButtonStyle.secondary)
+    async def no(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.wizard.skip_feature(interaction)
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(embed=discord.Embed(title="Quick Setup Cancelled", color=discord.Color.red()), view=None)
+
+
+class QuickSetupRolePicker(discord.ui.RoleSelect):
+    def __init__(self, wizard, key: str, prompt: str, multiple: bool = False) -> None:
+        self.wizard, self.key = wizard, key
+        super().__init__(placeholder=prompt[:150], min_values=1, max_values=5 if multiple else 1)
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.wizard.owner_id:
+            await interaction.response.send_message("Only the setup administrator can use this.", ephemeral=True)
+            return
+        await self.wizard.selected(interaction, self.key, list(self.values) if self.max_values > 1 else self.values[0])
+
+
+class QuickSetupChannelPicker(discord.ui.ChannelSelect):
+    def __init__(self, wizard, key: str, prompt: str, category: bool = False) -> None:
+        self.wizard, self.key = wizard, key
+        super().__init__(placeholder=prompt[:150], min_values=1, max_values=1, channel_types=[discord.ChannelType.category] if category else [discord.ChannelType.text])
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.wizard.owner_id:
+            await interaction.response.send_message("Only the setup administrator can use this.", ephemeral=True)
+            return
+        value = self.values[0]
+        if hasattr(value, "resolve"):
+            value = value.resolve() or value
+        await self.wizard.selected(interaction, self.key, value)
+
+
+class QuickSetupPickerView(discord.ui.View):
+    def __init__(self, item: discord.ui.Item) -> None:
+        super().__init__(timeout=600)
+        self.add_item(item)
+
+
+class QuickSetupWizard:
+    FEATURES = [
+        ("core", "Set signing/release log channels and the two manager roles?"),
+        ("remove_role", "Remove a chosen role automatically whenever somebody signs?"),
+        ("tickets", "Create a ticket panel with selectable problem types?"),
+        ("applications", "Create the Staff and Manager Applications panel?"),
+        ("moderation", "Set a moderation log channel and enable scam protection?"),
+        ("role_saver", "Save chosen roles when members leave and restore them when they return?"),
+    ]
+    PICKS = {
+        "core": [("signing", "channel", "Choose the signing log channel"), ("release", "channel", "Choose the release log channel"), ("manager_1", "role", "Choose the Manager role"), ("manager_2", "role", "Choose the Co-Manager role")],
+        "remove_role": [("remove_role", "role", "Choose the role removed when somebody signs")],
+        "tickets": [("ticket_panel", "channel", "Choose where the ticket panel is posted"), ("ticket_category", "category", "Choose the private ticket category"), ("support_role", "role", "Choose the ticket support role")],
+        "applications": [("app_panel", "channel", "Choose where the Applications panel is posted"), ("app_category", "category", "Choose the private application category"), ("reviewer_role", "role", "Choose the application reviewer role")],
+        "moderation": [("mod_log", "channel", "Choose the moderation log channel")],
+        "role_saver": [("role_log", "channel", "Choose the Role Saver log channel"), ("saved_roles", "roles", "Choose up to five roles to save")],
+    }
+
+    def __init__(self, cog, owner_id: int, guild: discord.Guild) -> None:
+        self.cog, self.db, self.owner_id, self.guild = cog, cog.db, owner_id, guild
+        self.index, self.data, self.pending, self.completed = 0, {}, [], []
+
+    def question_embed(self) -> discord.Embed:
+        _, question = self.FEATURES[self.index]
+        return discord.Embed(title=f"QUICK SETUP — {self.index + 1}/{len(self.FEATURES)}", description=question, color=discord.Color.blurple()).set_footer(text="Choose Yes or No")
+
+    async def ask(self, interaction: discord.Interaction):
+        if self.index >= len(self.FEATURES):
+            description = "\n".join(f"- {item}" for item in self.completed) or "No systems were changed."
+            await interaction.response.edit_message(embed=discord.Embed(title="QUICK SETUP COMPLETE", description=description, color=discord.Color.green()), view=None)
+            return
+        await interaction.response.edit_message(embed=self.question_embed(), view=QuickSetupView(self))
+
+    async def skip_feature(self, interaction: discord.Interaction):
+        self.index += 1
+        await self.ask(interaction)
+
+    async def start_feature(self, interaction: discord.Interaction):
+        feature = self.FEATURES[self.index][0]
+        self.pending = list(self.PICKS[feature])
+        await self.show_next_picker(interaction)
+
+    async def show_next_picker(self, interaction: discord.Interaction):
+        key, kind, prompt = self.pending[0]
+        item = QuickSetupChannelPicker(self, key, prompt, kind == "category") if kind in ("channel", "category") else QuickSetupRolePicker(self, key, prompt, kind == "roles")
+        await interaction.response.edit_message(embed=discord.Embed(title="QUICK SETUP", description=prompt, color=discord.Color.blurple()), view=QuickSetupPickerView(item))
+
+    async def selected(self, interaction: discord.Interaction, key: str, value):
+        self.data[key] = value
+        self.pending.pop(0)
+        if self.pending:
+            await self.show_next_picker(interaction)
+            return
+        await self.apply_feature()
+        self.index += 1
+        await self.ask(interaction)
+
+    async def apply_feature(self):
+        feature = self.FEATURES[self.index][0]
+        if feature == "core":
+            self.db.configure_guild(self.guild.id, self.data["signing"].id, self.data["release"].id, self.data["manager_1"].id, self.data["manager_2"].id)
+            self.completed.append("Core club configuration enabled")
+        elif feature == "remove_role":
+            if self.db.config(self.guild.id):
+                self.db.set_signing_remove_role(self.guild.id, self.data["remove_role"].id)
+                self.completed.append("Automatic signing-role removal enabled")
+            else:
+                self.completed.append("Signing-role removal skipped — core configuration is required")
+        elif feature == "tickets":
+            problems = ["General Support", "Report a Player", "Team Issue", "Transfer Issue", "Other"]
+            self.db.configure_tickets(self.guild.id, self.data["ticket_panel"].id, self.data["ticket_category"].id, self.data["support_role"].id, "\n".join(problems))
+            embed = discord.Embed(title="CHOOSE A TICKET TYPE", description="Select the tab that best matches what you need help with.\n\nA private channel will be created for you and the support team.", color=discord.Color.blurple())
+            await self.data["ticket_panel"].send(embed=embed, view=TicketPanelView(self.cog.bot, self.db, problems))
+            self.completed.append("Ticket panel created")
+        elif feature == "applications":
+            staff = ["Which staff position are you applying for?", "What experience do you have?", "Why should you be accepted?"]
+            manager = ["Which team would you like to manage?", "What management experience do you have?", "How would you build your roster?"]
+            self.db.configure_staff_applications(self.guild.id, self.data["app_panel"].id, self.data["app_category"].id, self.data["reviewer_role"].id, "Staff", "\n".join(staff), "\n".join(manager))
+            embed = discord.Embed(title="APPLICATIONS", description="Choose **Staff Application** or **Manager Application** below.\n\nThe bot will ask one question at a time in DMs.", color=discord.Color.blurple())
+            await self.data["app_panel"].send(embed=embed, view=ApplicationPanelView(self.cog.bot, self.db))
+            self.completed.append("Applications panel created")
+        elif feature == "moderation":
+            self.db.configure_moderation(self.guild.id, self.data["mod_log"].id, True)
+            self.completed.append("Moderation logs and scam protection enabled")
+        elif feature == "role_saver":
+            roles = [role for role in self.data["saved_roles"] if not role.is_default() and not role.managed]
+            self.db.configure_role_saver(self.guild.id, self.data["role_log"].id, [role.id for role in roles])
+            self.completed.append(f"Role Saver enabled for {len(roles)} roles")
+
+
 class ClubManagement(commands.Cog):
     def __init__(self, bot: commands.Bot, database: Database) -> None:
         self.bot = bot
@@ -1961,7 +2108,7 @@ class ClubManagement(commands.Cog):
             "**Teams:** `/addteam` `/editteam` `/removeteam` `/transferownership` `/teamoffers`\n"
             "**Staff:** `/promote` `/demoteco` `/forcepromote` `/forcedemote` `/forcesign` `/forcerelease`\n"
             "**Safety:** `/blacklist` `/removeblacklist` `/blacklistlist` `/debug`\n"
-            "**Community:** `/poll` `/pollconfig` `/ticketsetup` `/applicationsetup` `/rolesaversetup` `/welcomesetup` `/rulesembed`\n"
+            "**Community:** `/quicksetup` `/poll` `/pollconfig` `/ticketsetup` `/applicationsetup` `/rolesaversetup` `/welcomesetup` `/rulesembed`\n"
             "**Moderation:** `/moderationsetup` `/warn` `/warnings` `/kick` `/ban` `/timeout` `/purge`\n"
             "**Safety & recovery:** `/channelbackup` `/channelbackups` `/restorechannel` `/invites`\n"
             "**TOTW:** `/uploadstats` `/totwlist` `/totwsetweek` `/totwtestdata` `/totwcleartest`"
@@ -2123,6 +2270,17 @@ class ClubManagement(commands.Cog):
             f"Signing logs: {signing_channel.mention}\n"
             f"Release logs: {release_channel.mention}\n"
             f"Management roles: {manager_role_1.mention} and {manager_role_2.mention}",
+            ephemeral=True,
+        )
+
+    @app_commands.command(name="quicksetup", description="Guided Yes/No setup using channel and role selectors")
+    @app_commands.guild_only()
+    @app_commands.checks.has_permissions(administrator=True)
+    async def quicksetup(self, interaction: discord.Interaction):
+        wizard = QuickSetupWizard(self, interaction.user.id, interaction.guild)
+        await interaction.response.send_message(
+            embed=wizard.question_embed(),
+            view=QuickSetupView(wizard),
             ephemeral=True,
         )
 
