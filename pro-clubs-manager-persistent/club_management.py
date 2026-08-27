@@ -144,6 +144,81 @@ class OfferView(discord.ui.View):
             return False
         return True
 
+    async def send_bot_log(
+        self,
+        guild: discord.Guild,
+        title: str,
+        description: str,
+        color: discord.Color = discord.Color.blurple(),
+    ) -> None:
+        config = self.db.bot_log_config(guild.id)
+        channel = guild.get_channel(config["channel_id"]) if config else None
+        if not isinstance(channel, discord.TextChannel):
+            return
+        embed = discord.Embed(
+            title=title,
+            description=description,
+            color=color,
+            timestamp=discord.utils.utcnow(),
+        )
+        if guild.icon:
+            embed.set_author(name=guild.name, icon_url=guild.icon.url)
+        else:
+            embed.set_author(name=guild.name)
+        embed.set_footer(text="XPC Bot Activity")
+        try:
+            await channel.send(embed=embed)
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+
+    @commands.Cog.listener()
+    async def on_app_command_completion(
+        self, interaction: discord.Interaction, command: app_commands.Command
+    ) -> None:
+        if interaction.guild is None:
+            return
+        location = interaction.channel.mention if interaction.channel else "Unknown channel"
+        await self.send_bot_log(
+            interaction.guild,
+            "Command Completed",
+            f"**Command:** `/{command.qualified_name}`\n"
+            f"**Used by:** {interaction.user.mention} (`{interaction.user.id}`)\n"
+            f"**Channel:** {location}",
+            discord.Color.green(),
+        )
+
+    @commands.Cog.listener()
+    async def on_interaction(self, interaction: discord.Interaction) -> None:
+        if interaction.type != discord.InteractionType.component:
+            return
+        custom_id = str(interaction.data.get("custom_id", "unknown")) if interaction.data else "unknown"
+        guild = interaction.guild
+        if guild is None and custom_id.startswith("club_offer:"):
+            try:
+                offer = self.db.offer(int(custom_id.rsplit(":", 1)[1]))
+            except (ValueError, TypeError):
+                offer = None
+            guild = self.bot.get_guild(offer["guild_id"]) if offer else None
+        if guild is None:
+            return
+        location = interaction.channel.mention if interaction.channel and hasattr(interaction.channel, "mention") else "Direct messages"
+        if custom_id.startswith("club_offer:"):
+            safe_action = "Club Offer Decision"
+        elif custom_id.startswith("xpc_tickets:"):
+            safe_action = "Ticket System"
+        elif custom_id.startswith("xpc_staff:"):
+            safe_action = "Applications System"
+        else:
+            safe_action = "Setup or Interactive Control"
+        await self.send_bot_log(
+            guild,
+            "Button or Menu Used",
+            f"**System:** {safe_action}\n"
+            f"**Used by:** {interaction.user.mention} (`{interaction.user.id}`)\n"
+            f"**Location:** {location}",
+            discord.Color.gold(),
+        )
+
     async def accept(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True)
         offer = self.db.offer(self.offer_id)
@@ -1938,6 +2013,42 @@ class ClubManagement(commands.Cog):
         self.db.configure_franchise_role(interaction.guild_id, role.id)
         await interaction.response.send_message(f"Franchise Owner role set to {role.mention}.")
 
+    @app_commands.command(name="botlogsetup", description="Choose a channel for all bot activity logs")
+    @app_commands.guild_only()
+    async def botlogsetup(
+        self, interaction: discord.Interaction, channel: discord.TextChannel
+    ):
+        if not await self.require_owner_control(interaction):
+            return
+        permissions = channel.permissions_for(interaction.guild.me)
+        if not permissions.view_channel or not permissions.send_messages or not permissions.embed_links:
+            await interaction.response.send_message(
+                "Give the bot View Channel, Send Messages, and Embed Links permissions in that channel.",
+                ephemeral=True,
+            )
+            return
+        self.db.configure_bot_log(interaction.guild_id, channel.id)
+        await interaction.response.send_message(
+            f"Bot activity logs will now be posted in {channel.mention}."
+        )
+
+    @app_commands.command(name="botlogdisable", description="Turn off the bot activity log")
+    @app_commands.guild_only()
+    async def botlogdisable(self, interaction: discord.Interaction):
+        if not await self.require_owner_control(interaction):
+            return
+        await self.send_bot_log(
+            interaction.guild,
+            "Bot Activity Log Disabled",
+            f"Disabled by {interaction.user.mention} (`{interaction.user.id}`).",
+            discord.Color.red(),
+        )
+        disabled = self.db.disable_bot_log(interaction.guild_id)
+        await interaction.response.send_message(
+            "Bot activity logging has been disabled."
+            if disabled else "Bot activity logging was not configured."
+        )
+
     @app_commands.command(name="appointfranchiseowner", description="Give a member the franchise owner role")
     @app_commands.guild_only()
     async def appointfranchiseowner(self, interaction: discord.Interaction, member: discord.Member):
@@ -2290,7 +2401,7 @@ class ClubManagement(commands.Cog):
             "**Franchise Owners:** `/franchiseconfig` `/appointfranchiseowner` `/removefranchiseowner` `/franchiseowners`\n"
             "**Staff:** `/promote` `/demoteco` `/forcepromote` `/forcedemote` `/forcesign` `/forcerelease`\n"
             "**Safety:** `/blacklist` `/removeblacklist` `/blacklistlist` `/debug`\n"
-            "**Community:** `/quicksetup` `/poll` `/pollconfig` `/ticketsetup` `/applicationsetup` `/rolesaversetup` `/welcomesetup` `/rulesembed`\n"
+            "**Community:** `/quicksetup` `/botlogsetup` `/botlogdisable` `/poll` `/pollconfig` `/ticketsetup` `/applicationsetup` `/rolesaversetup` `/welcomesetup` `/rulesembed`\n"
             "**Moderation:** `/moderationsetup` `/warn` `/warnings` `/kick` `/ban` `/timeout` `/purge`\n"
             "**Safety & recovery:** `/channelbackup` `/channelbackups` `/restorechannel` `/invites`\n"
             "**TOTW:** `/uploadstats` `/statsuploads` `/totwlist` `/totwsetweek`"
