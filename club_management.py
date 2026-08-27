@@ -691,8 +691,10 @@ class ClubManagement(commands.Cog):
         self.bot.loop.create_task(self.run_dm_application(interaction.guild, interaction.user, dm, application_type, config, key))
 
     async def run_dm_application(self, guild: discord.Guild, member: discord.Member, dm: discord.DMChannel, application_type: str, config, key) -> None:
-        staff_positions = [value for value in config["positions"].split("\n") if value]
-        questions = ([f"Which staff position are you applying for? Available positions: {', '.join(staff_positions)}", "What is your age?", "What timezone are you in?", "Why do you want to join the staff team?", "What relevant experience do you have?", "How active can you be each week?", "What would make you a good member of staff?"] if application_type == "Staff" else ["Which team would you like to manage?", "What is your age?", "What timezone are you in?", "What Pro Clubs management experience do you have?", "Explain how you would build and manage your roster.", "How active can you be each week?", "Why should your manager application be accepted?"])
+        question_column = "staff_questions" if application_type == "Staff" else "manager_questions"
+        questions = [value.strip() for value in (config[question_column] or "").split("\n") if value.strip()]
+        if not questions:
+            questions = ["Why are you applying?", "What relevant experience do you have?", "How active can you be each week?"]
         answers = []
         try:
             for number, question in enumerate(questions, 1):
@@ -710,7 +712,7 @@ class ClubManagement(commands.Cog):
             overwrites = {guild.default_role: discord.PermissionOverwrite(view_channel=False), reviewer_role: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True), guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True)}
             safe_user = re.sub(r"[^a-z0-9-]", "-", member.name.lower()).strip("-")
             channel = await guild.create_text_channel(name=f"{application_type.lower()}-{safe_user or member.id}"[:100], category=category, overwrites=overwrites, reason=f"{application_type} application submitted by {member}")
-            position = answers[0] if application_type == "Staff" else "Manager"
+            position = application_type
             answer_text = json.dumps({"questions": questions, "answers": answers})
             self.db.create_staff_application(channel.id, guild.id, member.id, position, application_type, answer_text)
             embed = discord.Embed(title=f"{application_type} Application", description=f"Applicant: {member.mention}\nUsername: **{member}**\nUser ID: `{member.id}`", color=discord.Color.blurple(), timestamp=discord.utils.utcnow())
@@ -2441,25 +2443,32 @@ class ClubManagement(commands.Cog):
         panel_channel="Channel where members open applications",
         application_category="Category where private applications are created",
         reviewer_role="Staff role that reviews applications and gets pinged",
-        positions="Staff positions separated by commas",
+        staff_questions="Staff questions separated with |",
+        manager_questions="Manager questions separated with |",
     )
-    async def staffapplicationsetup(
+    async def applicationsetup(
         self, interaction: discord.Interaction,
         panel_channel: discord.TextChannel,
         application_category: discord.CategoryChannel,
         reviewer_role: discord.Role,
-        positions: str,
+        staff_questions: str,
+        manager_questions: str,
     ):
-        position_list = [item.strip() for item in positions.split(",") if item.strip()]
-        if not position_list:
-            await interaction.response.send_message("Add at least one staff position.", ephemeral=True)
+        def parse_questions(value: str) -> list[str]:
+            return [item.strip() for item in value.replace("\r", "").split("|") if item.strip()]
+
+        staff_question_list = parse_questions(staff_questions)
+        manager_question_list = parse_questions(manager_questions)
+        if not 1 <= len(staff_question_list) <= 15 or not 1 <= len(manager_question_list) <= 15:
+            await interaction.response.send_message("Add between 1 and 15 questions for each application. Separate questions with the | symbol.", ephemeral=True)
             return
-        if len(position_list) > 25:
-            await interaction.response.send_message("You can configure up to 25 positions.", ephemeral=True)
+        if any(len(question) > 300 for question in staff_question_list + manager_question_list):
+            await interaction.response.send_message("Each application question must be 300 characters or fewer.", ephemeral=True)
             return
         self.db.configure_staff_applications(
             interaction.guild_id, panel_channel.id, application_category.id,
-            reviewer_role.id, "\n".join(position_list),
+            reviewer_role.id, "Staff", "\n".join(staff_question_list),
+            "\n".join(manager_question_list),
         )
         embed = discord.Embed(
             title="APPLICATIONS",
