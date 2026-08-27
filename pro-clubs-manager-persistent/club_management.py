@@ -534,6 +534,7 @@ class ClubManagement(commands.Cog):
         self.bot = bot
         self.db = database
         self.active_applicants: set[tuple[int, int]] = set()
+        self.invite_cache: dict[int, dict[str, tuple[int, int | None]]] = {}
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         command_name = interaction.command.qualified_name if interaction.command else "unknown"
@@ -552,6 +553,7 @@ class ClubManagement(commands.Cog):
 
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member) -> None:
+        await self.track_invite_join(member)
         saver = self.db.role_saver_config(member.guild.id)
         if saver:
             restored = []
@@ -575,6 +577,77 @@ class ClubManagement(commands.Cog):
         if not isinstance(channel, discord.TextChannel) or not Path(config["banner_path"]).exists():
             return
         await self.send_welcome_card(member, channel, config)
+
+    @commands.Cog.listener()
+    async def on_ready(self) -> None:
+        for guild in self.bot.guilds:
+            await self.refresh_invite_cache(guild)
+
+    async def refresh_invite_cache(self, guild: discord.Guild) -> None:
+        try:
+            invites = await guild.invites()
+        except (discord.Forbidden, discord.HTTPException):
+            return
+        self.invite_cache[guild.id] = {invite.code: (invite.uses or 0, invite.inviter.id if invite.inviter else None) for invite in invites}
+
+    @commands.Cog.listener()
+    async def on_invite_create(self, invite: discord.Invite) -> None:
+        if invite.guild: await self.refresh_invite_cache(invite.guild)
+
+    @commands.Cog.listener()
+    async def on_invite_delete(self, invite: discord.Invite) -> None:
+        if invite.guild: await self.refresh_invite_cache(invite.guild)
+
+    @commands.Cog.listener()
+    async def on_guild_channel_delete(self, channel: discord.abc.GuildChannel) -> None:
+        if not isinstance(channel, discord.TextChannel):
+            return
+        overwrites = []
+        for target, overwrite in channel.overwrites.items():
+            allow, deny = overwrite.pair()
+            overwrites.append({"id": target.id, "kind": "role" if isinstance(target, discord.Role) else "member", "allow": allow.value, "deny": deny.value})
+        backup_id = self.db.save_channel_backup(channel.guild.id, channel.id, channel.name, "text", channel.category_id, channel.position, channel.topic, channel.nsfw, channel.slowmode_delay, json.dumps(overwrites))
+        await self.send_mod_log(channel.guild, "Deleted Channel Captured", f"**#{channel.name}** was deleted.\nIts name, category, topic and permissions were saved automatically.\nRestore with `/restorechannel backup_id:{backup_id}`.", discord.Color.red())
+
+    async def track_invite_join(self, member: discord.Member) -> None:
+        previous = self.invite_cache.get(member.guild.id, {})
+        try:
+            invites = await member.guild.invites()
+        except (discord.Forbidden, discord.HTTPException):
+            self.db.record_invite_join(member.guild.id, member.id, None, None)
+            return
+        used = next((invite for invite in invites if (invite.uses or 0) > previous.get(invite.code, (0, None))[0]), None)
+        self.db.record_invite_join(member.guild.id, member.id, used.inviter.id if used and used.inviter else None, used.code if used else None)
+        self.invite_cache[member.guild.id] = {invite.code: (invite.uses or 0, invite.inviter.id if invite.inviter else None) for invite in invites}
+
+    async def send_mod_log(self, guild: discord.Guild, title: str, description: str, color: discord.Color = discord.Color.orange()) -> None:
+        config = self.db.moderation_config(guild.id)
+        channel = guild.get_channel(config["log_channel_id"]) if config else None
+        if isinstance(channel, discord.TextChannel):
+            await channel.send(embed=discord.Embed(title=title, description=description, color=color, timestamp=discord.utils.utcnow()).set_footer(text="Made By EthanCoys"))
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message) -> None:
+        if not message.guild or message.author.bot or not isinstance(message.author, discord.Member):
+            return
+        config = self.db.moderation_config(message.guild.id)
+        if not config or not config["scam_protection"] or message.author.guild_permissions.administrator:
+            return
+        images = [item for item in message.attachments if (item.content_type or "").startswith("image/") or item.filename.lower().endswith((".png", ".jpg", ".jpeg", ".gif", ".webp"))]
+        content = message.content.casefold()
+        scam_phrases = ("free money", "guaranteed profit", "double your money", "crypto investment", "bitcoin investment", "cashapp flip", "money flip", "dm me to earn", "instant payout", "claim your airdrop", "investment opportunity")
+        if not images or not any(phrase in content for phrase in scam_phrases):
+            return
+        try:
+            await message.delete()
+        except discord.HTTPException:
+            pass
+        try:
+            await message.author.ban(reason="Automatic protection: image-based money scam", delete_message_seconds=86400)
+            action = "Message deleted and member banned"
+        except discord.Forbidden:
+            action = "Message deleted; bot could not ban the member"
+        await self.send_mod_log(message.guild, "Automatic Scam Protection", f"{message.author} (`{message.author.id}`)\nChannel: {message.channel.mention}\nAction: **{action}**\nMatched an image-based money scam phrase.", discord.Color.red())
 
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member) -> None:
@@ -1824,6 +1897,8 @@ class ClubManagement(commands.Cog):
             "**Staff:** `/promote` `/demoteco` `/forcepromote` `/forcedemote` `/forcesign` `/forcerelease`\n"
             "**Safety:** `/blacklist` `/removeblacklist` `/blacklistlist` `/debug`\n"
             "**Community:** `/poll` `/pollconfig` `/ticketsetup` `/applicationsetup` `/rolesaversetup` `/welcomesetup` `/rulesembed`\n"
+            "**Moderation:** `/moderationsetup` `/warn` `/warnings` `/kick` `/ban` `/timeout` `/purge`\n"
+            "**Safety & recovery:** `/channelbackup` `/channelbackups` `/restorechannel` `/invites`\n"
             "**TOTW:** `/uploadstats` `/totwlist` `/totwsetweek`"
         )
         embed = discord.Embed(title="XPC COMMAND HELP", description=text, color=discord.Color.blurple())
@@ -2106,6 +2181,114 @@ class ClubManagement(commands.Cog):
             f"Welcome test posted in {channel.mention}." if sent else "The welcome card could not be generated.",
             ephemeral=True,
         )
+
+    @app_commands.command(name="moderationsetup", description="Set moderation logs and automatic scam protection")
+    @app_commands.guild_only()
+    @app_commands.checks.has_permissions(administrator=True)
+    async def moderationsetup(self, interaction: discord.Interaction, log_channel: discord.TextChannel, scam_protection: bool = True):
+        self.db.configure_moderation(interaction.guild_id, log_channel.id, scam_protection)
+        await interaction.response.send_message(f"Moderation logs set to {log_channel.mention}. Image-money scam protection is **{'ON' if scam_protection else 'OFF'}**.", ephemeral=True)
+
+    @app_commands.command(name="warn", description="Warn a server member")
+    @app_commands.guild_only()
+    @app_commands.checks.has_permissions(moderate_members=True)
+    async def warn(self, interaction: discord.Interaction, member: discord.Member, reason: str):
+        warning_id = self.db.add_warning(interaction.guild_id, member.id, interaction.user.id, reason)
+        try: await member.send(f"You were warned in **{interaction.guild.name}**.\nReason: {reason}")
+        except discord.Forbidden: pass
+        await interaction.response.send_message(f"Warned {member.mention}. Warning `#{warning_id}`.", ephemeral=True)
+        await self.send_mod_log(interaction.guild, "Member Warned", f"Member: {member.mention}\nModerator: {interaction.user.mention}\nReason: {reason}")
+
+    @app_commands.command(name="warnings", description="View a member's warnings")
+    @app_commands.guild_only()
+    @app_commands.checks.has_permissions(moderate_members=True)
+    async def warnings(self, interaction: discord.Interaction, member: discord.Member):
+        rows = self.db.warnings_for(interaction.guild_id, member.id)
+        lines = [f"`#{row['id']}` {row['reason']} — <@{row['moderator_id']}>" for row in rows[:20]] or ["No warnings."]
+        await interaction.response.send_message(embed=discord.Embed(title=f"Warnings — {member}", description="\n".join(lines), color=discord.Color.orange()), ephemeral=True)
+
+    @app_commands.command(name="kick", description="Kick a member from the server")
+    @app_commands.guild_only()
+    @app_commands.checks.has_permissions(kick_members=True)
+    async def kick_member(self, interaction: discord.Interaction, member: discord.Member, reason: str = "No reason provided"):
+        if member.top_role >= interaction.user.top_role and interaction.guild.owner_id != interaction.user.id:
+            await interaction.response.send_message("You cannot kick someone with an equal or higher role.", ephemeral=True); return
+        await member.kick(reason=f"{reason} — {interaction.user}")
+        await interaction.response.send_message(f"Kicked **{member}**.", ephemeral=True)
+        await self.send_mod_log(interaction.guild, "Member Kicked", f"Member: **{member}** (`{member.id}`)\nModerator: {interaction.user.mention}\nReason: {reason}", discord.Color.red())
+
+    @app_commands.command(name="ban", description="Ban a member from the server")
+    @app_commands.guild_only()
+    @app_commands.checks.has_permissions(ban_members=True)
+    async def ban_member(self, interaction: discord.Interaction, member: discord.Member, reason: str = "No reason provided"):
+        if member.top_role >= interaction.user.top_role and interaction.guild.owner_id != interaction.user.id:
+            await interaction.response.send_message("You cannot ban someone with an equal or higher role.", ephemeral=True); return
+        await member.ban(reason=f"{reason} — {interaction.user}", delete_message_seconds=86400)
+        await interaction.response.send_message(f"Banned **{member}**.", ephemeral=True)
+        await self.send_mod_log(interaction.guild, "Member Banned", f"Member: **{member}** (`{member.id}`)\nModerator: {interaction.user.mention}\nReason: {reason}", discord.Color.red())
+
+    @app_commands.command(name="timeout", description="Temporarily timeout a member")
+    @app_commands.guild_only()
+    @app_commands.checks.has_permissions(moderate_members=True)
+    async def timeout_member(self, interaction: discord.Interaction, member: discord.Member, minutes: app_commands.Range[int, 1, 40320], reason: str = "No reason provided"):
+        await member.timeout(timedelta(minutes=minutes), reason=f"{reason} — {interaction.user}")
+        await interaction.response.send_message(f"Timed out {member.mention} for **{minutes} minutes**.", ephemeral=True)
+        await self.send_mod_log(interaction.guild, "Member Timed Out", f"Member: {member.mention}\nModerator: {interaction.user.mention}\nLength: {minutes} minutes\nReason: {reason}")
+
+    @app_commands.command(name="purge", description="Delete multiple messages from the current channel")
+    @app_commands.guild_only()
+    @app_commands.checks.has_permissions(manage_messages=True)
+    async def purge(self, interaction: discord.Interaction, amount: app_commands.Range[int, 1, 100]):
+        if not isinstance(interaction.channel, discord.TextChannel): return
+        await interaction.response.defer(ephemeral=True)
+        deleted = await interaction.channel.purge(limit=amount)
+        await interaction.followup.send(f"Deleted **{len(deleted)}** messages.", ephemeral=True)
+        await self.send_mod_log(interaction.guild, "Messages Purged", f"Moderator: {interaction.user.mention}\nChannel: {interaction.channel.mention}\nDeleted: {len(deleted)}")
+
+    @app_commands.command(name="channelbackup", description="Save a text channel and all of its permissions")
+    @app_commands.guild_only()
+    @app_commands.checks.has_permissions(administrator=True)
+    async def channelbackup(self, interaction: discord.Interaction, channel: discord.TextChannel):
+        overwrites = []
+        for target, overwrite in channel.overwrites.items():
+            allow, deny = overwrite.pair()
+            overwrites.append({"id": target.id, "kind": "role" if isinstance(target, discord.Role) else "member", "allow": allow.value, "deny": deny.value})
+        backup_id = self.db.save_channel_backup(interaction.guild_id, channel.id, channel.name, "text", channel.category_id, channel.position, channel.topic, channel.nsfw, channel.slowmode_delay, json.dumps(overwrites))
+        await interaction.response.send_message(f"Backed up {channel.mention} with all permissions. Backup ID: `{backup_id}`", ephemeral=True)
+
+    @app_commands.command(name="channelbackups", description="List restorable channel backups")
+    @app_commands.guild_only()
+    @app_commands.checks.has_permissions(administrator=True)
+    async def channelbackups(self, interaction: discord.Interaction):
+        rows = self.db.channel_backups(interaction.guild_id)
+        lines = [f"`{row['id']}` — **#{row['name']}** — {row['backed_up_at']}" for row in rows[:25]] or ["No channel backups saved."]
+        await interaction.response.send_message(embed=discord.Embed(title="Channel Backups", description="\n".join(lines), color=discord.Color.blurple()), ephemeral=True)
+
+    @app_commands.command(name="restorechannel", description="Recreate a deleted channel from a backup ID")
+    @app_commands.guild_only()
+    @app_commands.checks.has_permissions(administrator=True)
+    async def restorechannel(self, interaction: discord.Interaction, backup_id: int):
+        backup = self.db.channel_backup(interaction.guild_id, backup_id)
+        if not backup:
+            await interaction.response.send_message("That backup ID does not exist.", ephemeral=True); return
+        overwrites = {}
+        for saved in json.loads(backup["overwrites"]):
+            target = interaction.guild.get_role(saved["id"]) if saved["kind"] == "role" else interaction.guild.get_member(saved["id"])
+            if target:
+                overwrites[target] = discord.PermissionOverwrite.from_pair(discord.Permissions(saved["allow"]), discord.Permissions(saved["deny"]))
+        category = interaction.guild.get_channel(backup["category_id"]) if backup["category_id"] else None
+        channel = await interaction.guild.create_text_channel(name=backup["name"], category=category if isinstance(category, discord.CategoryChannel) else None, overwrites=overwrites, topic=backup["topic"], nsfw=bool(backup["nsfw"]), slowmode_delay=backup["slowmode"], position=backup["position"], reason=f"Restored by {interaction.user}")
+        await interaction.response.send_message(f"Restored {channel.mention} with its saved permissions.", ephemeral=True)
+        await self.send_mod_log(interaction.guild, "Channel Restored", f"Channel: {channel.mention}\nBackup ID: `{backup_id}`\nRestored by: {interaction.user.mention}", discord.Color.green())
+
+    @app_commands.command(name="invites", description="View how many tracked members someone invited")
+    @app_commands.guild_only()
+    async def invites(self, interaction: discord.Interaction, member: discord.Member | None = None):
+        target = member or interaction.user
+        count = self.db.invite_count(interaction.guild_id, target.id)
+        join = self.db.invite_join(interaction.guild_id, target.id)
+        invited_by = f"<@{join['inviter_id']}> using `{join['invite_code']}`" if join and join["inviter_id"] else "Unknown or vanity invite"
+        await interaction.response.send_message(embed=discord.Embed(title=f"Invite Tracker — {target}", description=f"Tracked successful invites: **{count}**\nJoined through: {invited_by}", color=discord.Color.blurple()))
 
     @app_commands.command(name="applicationsetup", description="Create the Staff and Manager Applications panel")
     @app_commands.guild_only()
