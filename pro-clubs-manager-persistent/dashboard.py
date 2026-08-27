@@ -29,6 +29,31 @@ def league_table(team_names, results):
 LOGIN_PAGE = """<!doctype html><html><head><meta name=viewport content='width=device-width,initial-scale=1'><title>XPC Control</title><style>
 body{margin:0;background:#080b12;color:#eef2ff;font:16px system-ui;display:grid;place-items:center;min-height:100vh}.card{width:min(390px,88vw);background:#121827;border:1px solid #29324a;border-radius:20px;padding:30px}h1{margin:0 0 8px;color:#7c8cff}p{color:#9ca7bd}input,button{box-sizing:border-box;width:100%;padding:13px;border-radius:10px;border:1px solid #34405d;background:#0b1020;color:white;margin-top:12px}button{background:#5865f2;border:0;font-weight:700;cursor:pointer}.error{color:#ff7188}</style></head><body><form class=card method=post action=/login><h1>XPC Control</h1><p>Sign in with your private dashboard password.</p>__ERROR__<input type=password name=password placeholder='Dashboard password' required autofocus><button>Open dashboard</button></form></body></html>"""
 
+LEGAL_STYLE = """<style>*{box-sizing:border-box}body{margin:0;background:#080b12;color:#edf1ff;font:16px/1.65 system-ui}main{width:min(850px,90vw);margin:55px auto;background:#111827;border:1px solid #29324a;border-radius:22px;padding:clamp(24px,5vw,52px)}h1{color:#91a0ff;margin:0}h2{margin-top:30px;color:#c7ceff}p,li{color:#b9c2d6}.date{color:#7f8ba5}</style>"""
+
+TERMS_PAGE = f"""<!doctype html><html><head><meta name=viewport content='width=device-width,initial-scale=1'><title>XPC Terms of Service</title>{LEGAL_STYLE}</head><body><main>
+<h1>XPC Bot Terms of Service</h1><p class=date>Effective 27 August 2026</p>
+<p>By inviting or using XPC, you agree to these terms and Discord's applicable rules. If you do not agree, do not use the bot.</p>
+<h2>Use of XPC</h2><p>XPC provides Discord tools for Pro Clubs management, applications, moderation, tickets, statistics and server administration. You must not use it to break laws, abuse Discord, harass others, bypass permissions or interfere with the service.</p>
+<h2>Server administration</h2><p>Server owners and authorised staff control their configuration and decisions. They are responsible for permissions, moderation actions, application questions and submitted content.</p>
+<h2>Premium features</h2><p>Some optional features may require Premium access. Any price, duration and purchase conditions will be shown before purchase. Access keys must not be resold, published or used without permission.</p>
+<h2>Availability and termination</h2><p>The service is provided as available and may change, experience downtime or be discontinued. Access may be suspended for misuse, security risks or violation of these terms. To the extent allowed by law, XPC is not liable for indirect loss caused by use or unavailability of the service.</p>
+<h2>Ownership and independence</h2><p>XPC's original code and branding remain the property of their respective owner. XPC is independently developed and is not affiliated with Discord, Electronic Arts, EA SPORTS or Byronic.</p>
+<h2>Changes and contact</h2><p>These terms may be updated when the service changes. Continued use after an update means you accept the revised terms. For questions or removal requests, contact the XPC operator through the official XPC Discord community or your server administrator.</p>
+</main></body></html>"""
+
+PRIVACY_PAGE = f"""<!doctype html><html><head><meta name=viewport content='width=device-width,initial-scale=1'><title>XPC Privacy Policy</title>{LEGAL_STYLE}</head><body><main>
+<h1>XPC Bot Privacy Policy</h1><p class=date>Effective 27 August 2026</p>
+<p>This policy explains what information XPC processes when you use the Discord bot.</p>
+<h2>Information processed</h2><p>XPC may store Discord user, server, channel and role IDs; team and roster configuration; offers, transfers, budgets and results; saved-role records; ticket and application answers; moderation warnings and logs; invite attribution; and statistics or images users intentionally submit.</p>
+<h2>How information is used</h2><p>Information is used only to operate requested bot features, preserve server configuration, restore permitted roles, provide audit records, prevent abuse and troubleshoot the service.</p>
+<h2>Storage and retention</h2><p>Operational data is stored in the bot's database on its hosting provider. It is retained while needed to provide the service or until removed by an authorised administrator. Application answers and direct messages are processed only when a user chooses to submit them.</p>
+<h2>Sharing</h2><p>XPC does not sell personal information. Data may be processed by Discord and the hosting provider Railway as needed to run the service, or disclosed when legally required or necessary to protect users and the service.</p>
+<h2>Security and choices</h2><p>Reasonable safeguards are used, but no online system can guarantee absolute security. Users can stop using the bot. Server owners or affected users may request access, correction or deletion through the official XPC Discord community or their server administrator, subject to legal and security requirements.</p>
+<h2>Children and changes</h2><p>Users must meet Discord's minimum age and any higher age required in their country. This policy may be updated when features or legal requirements change.</p>
+<h2>Contact</h2><p>For privacy questions, contact the XPC operator through the official XPC Discord community.</p>
+</main></body></html>"""
+
 DASHBOARD_PAGE = """<!doctype html><html><head><meta name=viewport content='width=device-width,initial-scale=1'><meta name=theme-color content='#090d18'><link rel=manifest href=/manifest.json><title>XPC Control</title><style>
 *{box-sizing:border-box}body{margin:0;background:#080b12;color:#ecf1ff;font:14px system-ui}header{position:sticky;top:0;z-index:2;background:#0d1220eF;border-bottom:1px solid #252d42;padding:16px 5vw;display:flex;align-items:center;gap:15px}h1{margin:0;font-size:22px;color:#91a0ff}select,input,button{background:#121a2c;color:#eef2ff;border:1px solid #303b57;border-radius:9px;padding:9px}button{cursor:pointer}.logout{margin-left:auto}main{width:min(1200px,92vw);margin:25px auto}.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px}.stat,.panel{background:#111827;border:1px solid #263049;border-radius:16px;padding:18px}.stat b{display:block;font-size:25px;color:#8d9cff;margin-top:5px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px;margin-top:15px}.panel h2{margin:0 0 14px}.command,.team{display:flex;align-items:center;gap:10px;padding:10px 0;border-top:1px solid #232d43}.command:first-of-type,.team:first-of-type{border:0}.command small{display:block;color:#929db4}.switch{margin-left:auto;width:48px;height:26px;border-radius:20px;background:#354058;padding:3px}.switch.on{background:#45bd77}.switch i{display:block;width:20px;height:20px;background:white;border-radius:50%;transition:.15s}.switch.on i{margin-left:22px}.logs{max-height:500px;overflow:auto}.log{padding:9px 0;border-top:1px solid #232d43}.log small{color:#8d98ae}.danger{color:#ff758c}.good{color:#59d98e}@media(max-width:600px){header{flex-wrap:wrap}.logout{margin-left:0}}</style></head><body>
 <header><h1>XPC Control</h1><select id=guild></select><button id=refresh>Refresh</button><form class=logout method=post action=/logout><button>Sign out</button></form></header>
@@ -69,7 +94,10 @@ class Dashboard:
         return bool(self.password) and hmac.compare_digest(request.cookies.get("xpc_session", ""), self.token)
 
     def api_authenticated(self, request: web.Request) -> bool:
-        return self.authenticated(request) and hmac.compare_digest(request.headers.get("X-Dashboard-Token", ""), self.token)
+        bearer = request.headers.get("Authorization", "")
+        bearer_ok = bearer.startswith("Bearer ") and hmac.compare_digest(bearer[7:], self.token)
+        browser_ok = self.authenticated(request) and hmac.compare_digest(request.headers.get("X-Dashboard-Token", ""), self.token)
+        return bearer_ok or browser_ok
 
     async def home(self, request):
         if not self.password:
@@ -92,6 +120,18 @@ class Dashboard:
 
     async def login_page(self, request):
         raise web.HTTPFound("/")
+
+    async def terms(self, request):
+        return web.Response(text=TERMS_PAGE, content_type="text/html")
+
+    async def privacy(self, request):
+        return web.Response(text=PRIVACY_PAGE, content_type="text/html")
+
+    async def desktop_login(self, request):
+        data = await request.json()
+        if not self.password or not hmac.compare_digest(str(data.get("password", "")), self.password):
+            raise web.HTTPUnauthorized(text="Incorrect dashboard password")
+        return web.json_response({"token": self.token})
 
     async def logout(self, request):
         response = web.HTTPFound("/")
@@ -218,6 +258,6 @@ class Dashboard:
 
     async def start(self) -> None:
         app = web.Application(client_max_size=1024 * 1024)
-        app.add_routes([web.get("/", self.home), web.get("/login", self.login_page), web.post("/login", self.login), web.post("/logout", self.logout), web.get("/api/guilds", self.guilds), web.get("/api/state", self.state), web.get("/api/public/league", self.public_league), web.post("/api/toggle", self.toggle), web.post("/api/budget", self.budget), web.post("/api/team", self.add_team), web.post("/api/team-logo", self.team_logo), web.post("/api/fixture", self.add_fixture), web.post("/api/trophy", self.add_trophy), web.post("/api/trophy-award", self.award_trophy), web.post("/api/window", self.window), web.get("/manifest.json", self.manifest), web.get("/sw.js", self.service_worker)])
+        app.add_routes([web.get("/", self.home), web.get("/login", self.login_page), web.post("/login", self.login), web.post("/logout", self.logout), web.get("/terms", self.terms), web.get("/terms-of-service", self.terms), web.get("/privacy", self.privacy), web.get("/privacy-policy", self.privacy), web.post("/api/desktop/login", self.desktop_login), web.get("/api/guilds", self.guilds), web.get("/api/state", self.state), web.get("/api/public/league", self.public_league), web.post("/api/toggle", self.toggle), web.post("/api/budget", self.budget), web.post("/api/team", self.add_team), web.post("/api/team-logo", self.team_logo), web.post("/api/fixture", self.add_fixture), web.post("/api/trophy", self.add_trophy), web.post("/api/trophy-award", self.award_trophy), web.post("/api/window", self.window), web.get("/manifest.json", self.manifest), web.get("/sw.js", self.service_worker)])
         self.runner = web.AppRunner(app); await self.runner.setup(); site = web.TCPSite(self.runner, "0.0.0.0", int(os.getenv("PORT", "8080"))); await site.start()
 
