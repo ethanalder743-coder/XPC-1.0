@@ -1,5 +1,6 @@
 import asyncio
 import io
+import json
 import re
 import sqlite3
 from datetime import timedelta
@@ -497,10 +498,42 @@ class StaffApplicationPanelView(discord.ui.View):
         self.add_item(StaffPositionSelect(database, positions))
 
 
+class ApplicationTypeSelect(discord.ui.Select):
+    def __init__(self, bot: commands.Bot, database: Database) -> None:
+        self.bot = bot
+        self.db = database
+        super().__init__(
+            placeholder="Choose an application type",
+            min_values=1,
+            max_values=1,
+            options=[
+                discord.SelectOption(label="Staff Application", value="Staff", description="Apply to join the server staff team"),
+                discord.SelectOption(label="Manager Application", value="Manager", description="Apply to manage a Pro Clubs team"),
+            ],
+            custom_id="xpc_applications:type",
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+            return
+        cog = self.bot.get_cog("ClubManagement")
+        if cog is None:
+            await interaction.response.send_message("Applications are temporarily unavailable.", ephemeral=True)
+            return
+        await cog.start_dm_application(interaction, self.values[0])
+
+
+class ApplicationPanelView(discord.ui.View):
+    def __init__(self, bot: commands.Bot, database: Database) -> None:
+        super().__init__(timeout=None)
+        self.add_item(ApplicationTypeSelect(bot, database))
+
+
 class ClubManagement(commands.Cog):
     def __init__(self, bot: commands.Bot, database: Database) -> None:
         self.bot = bot
         self.db = database
+        self.active_applicants: set[tuple[int, int]] = set()
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         command_name = interaction.command.qualified_name if interaction.command else "unknown"
@@ -519,6 +552,22 @@ class ClubManagement(commands.Cog):
 
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member) -> None:
+        saver = self.db.role_saver_config(member.guild.id)
+        if saver:
+            restored = []
+            for role_id in self.db.saved_member_roles(member.guild.id, member.id):
+                role = member.guild.get_role(role_id)
+                if role and not role.managed and role < member.guild.me.top_role:
+                    restored.append(role)
+            if restored:
+                try:
+                    await member.add_roles(*restored, reason="XPC role saver restore")
+                except discord.Forbidden:
+                    restored = []
+            log_channel = member.guild.get_channel(saver["log_channel_id"])
+            if isinstance(log_channel, discord.TextChannel):
+                text = ", ".join(role.mention for role in restored) if restored else "No saved roles"
+                await log_channel.send(embed=discord.Embed(title="Member Rejoined", description=f"{member.mention}\nRestored: {text}", color=discord.Color.green(), timestamp=discord.utils.utcnow()))
         config = self.db.welcome_config(member.guild.id)
         if not config:
             return
@@ -526,6 +575,76 @@ class ClubManagement(commands.Cog):
         if not isinstance(channel, discord.TextChannel) or not Path(config["banner_path"]).exists():
             return
         await self.send_welcome_card(member, channel, config)
+
+    @commands.Cog.listener()
+    async def on_member_remove(self, member: discord.Member) -> None:
+        saver = self.db.role_saver_config(member.guild.id)
+        if not saver:
+            return
+        allowed = {int(value) for value in saver["role_ids"].split(",") if value}
+        saved = [role.id for role in member.roles if role.id in allowed]
+        self.db.save_member_roles(member.guild.id, member.id, saved)
+        log_channel = member.guild.get_channel(saver["log_channel_id"])
+        if isinstance(log_channel, discord.TextChannel):
+            roles = [member.guild.get_role(role_id) for role_id in saved]
+            text = ", ".join(role.mention for role in roles if role) or "No configured roles"
+            await log_channel.send(embed=discord.Embed(title="Member Left - Roles Saved", description=f"**{member}** (`{member.id}`)\nSaved: {text}", color=discord.Color.orange(), timestamp=discord.utils.utcnow()))
+
+    async def start_dm_application(self, interaction: discord.Interaction, application_type: str) -> None:
+        assert interaction.guild and isinstance(interaction.user, discord.Member)
+        config = self.db.staff_application_config(interaction.guild.id)
+        if not config:
+            await interaction.response.send_message("Applications are not configured yet.", ephemeral=True)
+            return
+        key = (interaction.guild.id, interaction.user.id)
+        if key in self.active_applicants:
+            await interaction.response.send_message("You already have an application in progress in your DMs.", ephemeral=True)
+            return
+        existing = self.db.open_staff_application(interaction.guild.id, interaction.user.id)
+        if existing:
+            await interaction.response.send_message("You already have an application awaiting review.", ephemeral=True)
+            return
+        try:
+            dm = await interaction.user.create_dm()
+            await dm.send(embed=discord.Embed(title=f"{application_type} Application", description=f"Your application for **{interaction.guild.name}** will be completed here. I will send one question at a time. You have 10 minutes to answer each question.", color=discord.Color.blurple()))
+        except discord.Forbidden:
+            await interaction.response.send_message("I cannot DM you. Enable direct messages from server members and try again.", ephemeral=True)
+            return
+        self.active_applicants.add(key)
+        await interaction.response.send_message("Your application has started. Check your DMs for the first question.", ephemeral=True)
+        self.bot.loop.create_task(self.run_dm_application(interaction.guild, interaction.user, dm, application_type, config, key))
+
+    async def run_dm_application(self, guild: discord.Guild, member: discord.Member, dm: discord.DMChannel, application_type: str, config, key) -> None:
+        staff_positions = [value for value in config["positions"].split("\n") if value]
+        questions = ([f"Which staff position are you applying for? Available positions: {', '.join(staff_positions)}", "What is your age?", "What timezone are you in?", "Why do you want to join the staff team?", "What relevant experience do you have?", "How active can you be each week?", "What would make you a good member of staff?"] if application_type == "Staff" else ["Which team would you like to manage?", "What is your age?", "What timezone are you in?", "What Pro Clubs management experience do you have?", "Explain how you would build and manage your roster.", "How active can you be each week?", "Why should your manager application be accepted?"])
+        answers = []
+        try:
+            for number, question in enumerate(questions, 1):
+                await dm.send(embed=discord.Embed(title=f"Question {number} of {len(questions)}", description=question, color=discord.Color.blurple()).set_footer(text="Reply to this DM with your answer"))
+                try:
+                    message = await self.bot.wait_for("message", timeout=600, check=lambda m: m.author.id == member.id and m.channel.id == dm.id and not m.author.bot)
+                except asyncio.TimeoutError:
+                    await dm.send("Your application expired because no answer was received for 10 minutes. You can start again from the Applications panel.")
+                    return
+                answers.append(message.content.strip()[:1500] or "No written answer")
+            category = guild.get_channel(config["category_id"]); reviewer_role = guild.get_role(config["reviewer_role_id"])
+            if not isinstance(category, discord.CategoryChannel) or reviewer_role is None:
+                await dm.send("Your answers were received, but the review area is not configured correctly. Please contact an administrator.")
+                return
+            overwrites = {guild.default_role: discord.PermissionOverwrite(view_channel=False), reviewer_role: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True), guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True)}
+            safe_user = re.sub(r"[^a-z0-9-]", "-", member.name.lower()).strip("-")
+            channel = await guild.create_text_channel(name=f"{application_type.lower()}-{safe_user or member.id}"[:100], category=category, overwrites=overwrites, reason=f"{application_type} application submitted by {member}")
+            position = answers[0] if application_type == "Staff" else "Manager"
+            answer_text = json.dumps({"questions": questions, "answers": answers})
+            self.db.create_staff_application(channel.id, guild.id, member.id, position, application_type, answer_text)
+            embed = discord.Embed(title=f"{application_type} Application", description=f"Applicant: {member.mention}\nUsername: **{member}**\nUser ID: `{member.id}`", color=discord.Color.blurple(), timestamp=discord.utils.utcnow())
+            if member.display_avatar: embed.set_thumbnail(url=member.display_avatar.url)
+            for number, (question, answer) in enumerate(zip(questions, answers), 1): embed.add_field(name=f"{number}. {question[:240]}", value=answer[:1000], inline=False)
+            embed.set_footer(text="Made By EthanCoys")
+            await channel.send(content=reviewer_role.mention, embed=embed, view=StaffApplicationCloseView(self.db), allowed_mentions=discord.AllowedMentions(roles=True))
+            await dm.send(embed=discord.Embed(title="Application Submitted", description=f"Your **{application_type} Application** has been sent to the review team. They will contact you when a decision is made.", color=discord.Color.green()))
+        finally:
+            self.active_applicants.discard(key)
 
     async def send_welcome_card(
         self, member: discord.Member, channel: discord.TextChannel, config
@@ -1704,7 +1823,7 @@ class ClubManagement(commands.Cog):
             "**Teams:** `/addteam` `/editteam` `/removeteam` `/transferownership` `/teamoffers`\n"
             "**Staff:** `/promote` `/demoteco` `/forcepromote` `/forcedemote` `/forcesign` `/forcerelease`\n"
             "**Safety:** `/blacklist` `/removeblacklist` `/blacklistlist` `/debug`\n"
-            "**Community:** `/poll` `/pollconfig` `/ticketsetup` `/staffapplicationsetup` `/welcomesetup` `/rulesembed`\n"
+            "**Community:** `/poll` `/pollconfig` `/ticketsetup` `/applicationsetup` `/rolesaversetup` `/welcomesetup` `/rulesembed`\n"
             "**TOTW:** `/uploadstats` `/totwlist` `/totwsetweek`"
         )
         embed = discord.Embed(title="XPC COMMAND HELP", description=text, color=discord.Color.blurple())
@@ -1988,7 +2107,7 @@ class ClubManagement(commands.Cog):
             ephemeral=True,
         )
 
-    @app_commands.command(name="staffapplicationsetup", description="Create the staff application panel")
+    @app_commands.command(name="applicationsetup", description="Create the Staff and Manager Applications panel")
     @app_commands.guild_only()
     @app_commands.checks.has_permissions(administrator=True)
     @app_commands.describe(
@@ -2016,10 +2135,10 @@ class ClubManagement(commands.Cog):
             reviewer_role.id, "\n".join(position_list),
         )
         embed = discord.Embed(
-            title="STAFF APPLICATIONS",
+            title="APPLICATIONS",
             description=(
-                "Select the position you want to apply for below.\n\n"
-                "A private application channel will be created for you and the review team."
+                "Choose **Staff Application** or **Manager Application** below.\n\n"
+                "The bot will DM you one question at a time. Your completed answers are then sent privately to the application review team."
             ),
             color=discord.Color.blurple(),
             timestamp=discord.utils.utcnow(),
@@ -2029,12 +2148,28 @@ class ClubManagement(commands.Cog):
         embed.set_footer(text="Made By EthanCoys")
         await panel_channel.send(
             embed=embed,
-            view=StaffApplicationPanelView(self.db, position_list),
+            view=ApplicationPanelView(self.bot, self.db),
         )
         await interaction.response.send_message(
-            f"Staff application panel posted in {panel_channel.mention}. {reviewer_role.mention} will review applications.",
+            f"Applications panel posted in {panel_channel.mention}. {reviewer_role.mention} will review Staff and Manager applications.",
             ephemeral=True,
         )
+
+    @app_commands.command(name="rolesaversetup", description="Choose roles saved when members leave and set the log channel")
+    @app_commands.guild_only()
+    @app_commands.checks.has_permissions(administrator=True)
+    async def rolesaversetup(
+        self, interaction: discord.Interaction, log_channel: discord.TextChannel,
+        role_1: discord.Role, role_2: discord.Role | None = None,
+        role_3: discord.Role | None = None, role_4: discord.Role | None = None,
+        role_5: discord.Role | None = None,
+    ):
+        roles = list(dict.fromkeys(role for role in (role_1, role_2, role_3, role_4, role_5) if role and not role.is_default() and not role.managed))
+        if not roles:
+            await interaction.response.send_message("Choose at least one normal Discord role.", ephemeral=True)
+            return
+        self.db.configure_role_saver(interaction.guild_id, log_channel.id, [role.id for role in roles])
+        await interaction.response.send_message(f"Role Saver enabled. Members will only have these configured roles restored when they return: {', '.join(role.mention for role in roles)}\nLogs: {log_channel.mention}", ephemeral=True)
 
     @app_commands.command(name="ticketsetup", description="Create and configure the support ticket panel")
     @app_commands.guild_only()
@@ -2094,6 +2229,6 @@ async def setup(bot: commands.Bot, database: Database) -> None:
     await bot.add_cog(ClubManagement(bot, database))
     bot.add_view(TicketPanelView(bot, database, ["General Support"]))
     bot.add_view(TicketCloseView(database))
-    bot.add_view(StaffApplicationPanelView(database, ["Staff"]))
+    bot.add_view(ApplicationPanelView(bot, database))
     bot.add_view(StaffApplicationCloseView(database))
 
