@@ -1,10 +1,8 @@
 import asyncio
-import hashlib
 import io
 import json
 import os
 import re
-import secrets
 import sqlite3
 from datetime import timedelta
 from pathlib import Path
@@ -845,29 +843,6 @@ class ClubManagement(commands.Cog):
         await interaction.response.send_message(
             "Only the configured franchise owner role can use this command.", ephemeral=True
         )
-        return False
-
-    async def is_bot_owner(self, user: discord.abc.User) -> bool:
-        configured = os.getenv("BOT_OWNER_ID", "").strip()
-        if configured and configured.isdigit() and user.id == int(configured):
-            return True
-        try: return await self.bot.is_owner(user)
-        except Exception: return False
-
-    async def has_premium_access(self, guild_id: int, user: discord.abc.User) -> bool:
-        if await self.is_bot_owner(user) or self.db.premium_bypass(user.id):
-            return True
-        status = self.db.premium_status(guild_id)
-        return bool(status and status["active"])
-
-    async def require_premium(self, interaction: discord.Interaction) -> bool:
-        if await self.has_premium_access(interaction.guild_id, interaction.user):
-            return True
-        payment_url = os.getenv("PREMIUM_PAYMENT_URL", "").strip()
-        message = "This is an XPC Premium feature. This server does not have an active subscription."
-        if payment_url: message += f"\nPurchase Premium: {payment_url}"
-        message += "\nAfter purchase, redeem your code with `/premiumredeem`."
-        await interaction.response.send_message(message, ephemeral=True)
         return False
 
     def managed_team_for(self, member: discord.Member):
@@ -1932,7 +1907,6 @@ class ClubManagement(commands.Cog):
             "**Community:** `/poll` `/pollconfig` `/ticketsetup` `/applicationsetup` `/rolesaversetup` `/welcomesetup` `/rulesembed`\n"
             "**Moderation:** `/moderationsetup` `/warn` `/warnings` `/kick` `/ban` `/timeout` `/purge`\n"
             "**Safety & recovery:** `/channelbackup` `/channelbackups` `/restorechannel` `/invites`\n"
-            "**Premium:** `/premium` `/premiumunlock` `/premiumredeem` `/premiumusername` `/premiumprofile` `/premiumannounce`\n"
             "**TOTW:** `/uploadstats` `/totwlist` `/totwsetweek`"
         )
         embed = discord.Embed(title="XPC COMMAND HELP", description=text, color=discord.Color.blurple())
@@ -2215,155 +2189,6 @@ class ClubManagement(commands.Cog):
             f"Welcome test posted in {channel.mention}." if sent else "The welcome card could not be generated.",
             ephemeral=True,
         )
-
-    @app_commands.command(name="premium", description="View XPC Premium status and purchase information")
-    @app_commands.guild_only()
-    async def premium(self, interaction: discord.Interaction):
-        status = self.db.premium_status(interaction.guild_id)
-        bypass = self.db.premium_bypass(interaction.user.id) or await self.is_bot_owner(interaction.user)
-        active = bypass or bool(status and status["active"])
-        if bypass: access = "Unlimited bypass access"
-        elif status and status["active"]: access = "Lifetime" if status["expires_at"] is None else f"Expires: {status['expires_at']} UTC"
-        else: access = "No active subscription"
-        payment_url = os.getenv("PREMIUM_PAYMENT_URL", "").strip()
-        description = f"Status: **{'ACTIVE' if active else 'INACTIVE'}**\nAccess: **{access}**\n\nPremium includes per-server bot branding, custom colours, logos, banners and premium announcements."
-        if payment_url and not active: description += f"\n\n[Purchase XPC Premium]({payment_url})"
-        if not active: description += "\nAfter purchasing, use `/premiumredeem` with your private code."
-        await interaction.response.send_message(embed=discord.Embed(title="XPC PREMIUM", description=description, color=discord.Color.gold()), ephemeral=True)
-
-    @app_commands.command(name="premiumunlock", description="Unlock Premium using an access key")
-    @app_commands.guild_only()
-    async def premiumunlock(self, interaction: discord.Interaction, key: str):
-        expected = os.getenv("PREMIUM_ACCESS_KEY", "").strip()
-        if not expected:
-            await interaction.response.send_message("Premium key access has not been configured yet.", ephemeral=True)
-            return
-        if not secrets.compare_digest(key.strip(), expected):
-            await interaction.response.send_message("That Premium key is incorrect.", ephemeral=True)
-            return
-        self.db.add_premium_bypass(interaction.user.id, interaction.user.id)
-        await interaction.response.send_message("Premium unlocked. You can now use every Premium feature in any server with this bot.", ephemeral=True)
-
-    @app_commands.command(name="premiumredeem", description="Redeem a purchased XPC Premium code for this server")
-    @app_commands.guild_only()
-    @app_commands.checks.has_permissions(administrator=True)
-    async def premiumredeem(self, interaction: discord.Interaction, code: str):
-        code_hash = hashlib.sha256(code.strip().upper().encode()).hexdigest()
-        days = self.db.redeem_premium_code(code_hash, interaction.guild_id, interaction.user.id)
-        if days is None:
-            await interaction.response.send_message("That Premium code is invalid or has already been redeemed.", ephemeral=True); return
-        await interaction.response.send_message(f"XPC Premium activated for **{days} days** on this server.", ephemeral=True)
-
-    @app_commands.command(name="premiumcode", description="Create a paid Premium redemption code (bot owner only)")
-    @app_commands.guild_only()
-    async def premiumcode(self, interaction: discord.Interaction, days: app_commands.Range[int, 1, 3650] = 30):
-        if not await self.is_bot_owner(interaction.user):
-            await interaction.response.send_message("Only the bot owner can create paid Premium codes.", ephemeral=True); return
-        code = "XPC-" + "-".join(secrets.token_hex(2).upper() for _ in range(3))
-        self.db.create_premium_code(hashlib.sha256(code.encode()).hexdigest(), days, interaction.user.id)
-        await interaction.response.send_message(f"New **{days}-day** Premium code:\n```{code}```\nGive this code only to the customer who paid. It can be redeemed once.", ephemeral=True)
-
-    @app_commands.command(name="premiumgrant", description="Grant Premium directly to this server (bot owner only)")
-    @app_commands.guild_only()
-    async def premiumgrant(self, interaction: discord.Interaction, days: app_commands.Range[int, 1, 3650] = 30, lifetime: bool = False):
-        if not await self.is_bot_owner(interaction.user):
-            await interaction.response.send_message("Only the bot owner can grant Premium.", ephemeral=True); return
-        self.db.grant_premium(interaction.guild_id, None if lifetime else days, interaction.user.id)
-        await interaction.response.send_message("Lifetime Premium granted." if lifetime else f"Premium granted for **{days} days**.", ephemeral=True)
-
-    @app_commands.command(name="premiumrevoke", description="Remove Premium from this server (bot owner only)")
-    @app_commands.guild_only()
-    async def premiumrevoke(self, interaction: discord.Interaction):
-        if not await self.is_bot_owner(interaction.user):
-            await interaction.response.send_message("Only the bot owner can revoke Premium.", ephemeral=True); return
-        self.db.revoke_premium(interaction.guild_id)
-        await interaction.response.send_message("Premium removed from this server.", ephemeral=True)
-
-    @app_commands.command(name="premiumbypass", description="Give a person unlimited Premium access (bot owner only)")
-    @app_commands.guild_only()
-    async def premiumbypass(self, interaction: discord.Interaction, user: discord.Member):
-        if not await self.is_bot_owner(interaction.user):
-            await interaction.response.send_message("Only the bot owner can manage Premium bypasses.", ephemeral=True); return
-        self.db.add_premium_bypass(user.id, interaction.user.id)
-        await interaction.response.send_message(f"{user.mention} now bypasses the paywall and has every Premium feature.", ephemeral=True)
-
-    @app_commands.command(name="premiumunbypass", description="Remove a person's Premium bypass (bot owner only)")
-    @app_commands.guild_only()
-    async def premiumunbypass(self, interaction: discord.Interaction, user: discord.Member):
-        if not await self.is_bot_owner(interaction.user):
-            await interaction.response.send_message("Only the bot owner can manage Premium bypasses.", ephemeral=True); return
-        self.db.remove_premium_bypass(user.id)
-        await interaction.response.send_message(f"Premium bypass removed from {user.mention}.", ephemeral=True)
-
-    @app_commands.command(name="premiumprofile", description="Customise the bot profile and branding for this server")
-    @app_commands.guild_only()
-    @app_commands.checks.has_permissions(manage_guild=True)
-    async def premiumprofile(self, interaction: discord.Interaction, display_name: str, accent_hex: str = "#5865F2", logo: discord.Attachment | None = None, banner: discord.Attachment | None = None):
-        if not await self.require_premium(interaction): return
-        try: color = int(accent_hex.strip().lstrip("#"), 16)
-        except ValueError:
-            await interaction.response.send_message("Enter a colour such as `#5865F2`.", ephemeral=True); return
-        if not 0 <= color <= 0xFFFFFF or len(display_name) > 32:
-            await interaction.response.send_message("The name must be 32 characters or fewer and the colour must be a valid hex colour.", ephemeral=True); return
-        current = self.db.premium_branding(interaction.guild_id)
-        logo_url = logo.url if logo else (current["logo_url"] if current else None)
-        banner_url = banner.url if banner else (current["banner_url"] if current else None)
-        self.db.set_premium_branding(interaction.guild_id, display_name, color, logo_url, banner_url)
-        if interaction.guild.me:
-            try: await interaction.guild.me.edit(nick=display_name, reason=f"Premium profile changed by {interaction.user}")
-            except discord.Forbidden: pass
-        embed = discord.Embed(title=display_name, description="Premium server profile updated.", color=color)
-        if logo_url: embed.set_thumbnail(url=logo_url)
-        if banner_url: embed.set_image(url=banner_url)
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
-    @app_commands.command(name="premiumusername", description="Change the bot's visible name in this server")
-    @app_commands.guild_only()
-    @app_commands.checks.has_permissions(manage_guild=True)
-    async def premiumusername(self, interaction: discord.Interaction, username: str):
-        if not await self.require_premium(interaction):
-            return
-        username = username.strip()
-        if not 1 <= len(username) <= 32:
-            await interaction.response.send_message("The server bot name must be between 1 and 32 characters.", ephemeral=True)
-            return
-        bot_member = interaction.guild.me
-        if bot_member is None:
-            await interaction.response.send_message("I could not find my bot member in this server.", ephemeral=True)
-            return
-        try:
-            await bot_member.edit(nick=username, reason=f"Premium server name changed by {interaction.user}")
-        except discord.Forbidden:
-            await interaction.response.send_message("I cannot change my server name. Give the bot **Change Nickname** permission and make sure its role is high enough.", ephemeral=True)
-            return
-        except discord.HTTPException:
-            await interaction.response.send_message("Discord rejected that name. Try a different one.", ephemeral=True)
-            return
-        current = self.db.premium_branding(interaction.guild_id)
-        self.db.set_premium_branding(
-            interaction.guild_id,
-            username,
-            int(current["accent_color"]) if current else discord.Color.blurple().value,
-            current["logo_url"] if current else None,
-            current["banner_url"] if current else None,
-        )
-        await interaction.response.send_message(f"The bot is now shown as **{username}** in this server.", ephemeral=True)
-
-    @app_commands.command(name="premiumannounce", description="Post a branded Premium announcement")
-    @app_commands.guild_only()
-    @app_commands.checks.has_permissions(manage_messages=True)
-    async def premiumannounce(self, interaction: discord.Interaction, channel: discord.TextChannel, title: str, message: str):
-        if not await self.require_premium(interaction): return
-        branding = self.db.premium_branding(interaction.guild_id)
-        color = int(branding["accent_color"]) if branding else discord.Color.blurple().value
-        embed = discord.Embed(title=title, description=message, color=color, timestamp=discord.utils.utcnow())
-        if branding and branding["display_name"]:
-            if branding["logo_url"]: embed.set_author(name=branding["display_name"], icon_url=branding["logo_url"])
-            else: embed.set_author(name=branding["display_name"])
-        if branding and branding["logo_url"]: embed.set_thumbnail(url=branding["logo_url"])
-        if branding and branding["banner_url"]: embed.set_image(url=branding["banner_url"])
-        await channel.send(embed=embed)
-        await interaction.response.send_message(f"Premium announcement posted in {channel.mention}.", ephemeral=True)
 
     @app_commands.command(name="moderationsetup", description="Set moderation logs and automatic scam protection")
     @app_commands.guild_only()
