@@ -180,7 +180,9 @@ class Dashboard:
         fixtures = [dict(row) for row in self.db.fixtures(guild_id)]
         trophies = [dict(row) for row in self.db.trophies(guild_id)]
         winners = [dict(row) for row in self.db.trophy_winners(guild_id)]
-        return web.json_response({"commands": commands, "teams": teams, "roles": roles, "members": members, "logs": logs, "fixtures": fixtures, "trophies": trophies, "trophy_winners": winners, "transfer_window_open": self.db.transfer_window_open(guild_id)})
+        results = [dict(row) for row in self.db.results(guild_id)]
+        standings = league_table([team["name"] for team in teams], results)
+        return web.json_response({"commands": commands, "teams": teams, "roles": roles, "members": members, "logs": logs, "fixtures": fixtures, "trophies": trophies, "trophy_winners": winners, "results": results, "standings": standings, "transfer_window_open": self.db.transfer_window_open(guild_id)})
 
     async def public_league(self, request):
         guild_id = int(request.query.get("guild_id", "0"))
@@ -256,6 +258,40 @@ class Dashboard:
         )
         return web.json_response({"ok": True, "count": len(names)})
 
+    async def update_result(self, request):
+        self.require_api(request)
+        data = await request.json()
+        guild_id = int(data["guild_id"])
+        result_id = int(data["result_id"])
+        home_score = int(data["home_score"])
+        away_score = int(data["away_score"])
+        if not 0 <= home_score <= 99 or not 0 <= away_score <= 99:
+            raise web.HTTPBadRequest(text="Scores must be between 0 and 99.")
+        result = self.db.result(guild_id, result_id)
+        if result is None:
+            raise web.HTTPNotFound(text="Result not found")
+        self.db.update_result(guild_id, result_id, home_score, away_score)
+        self.db.add_audit(
+            guild_id, None, "Dashboard result updated",
+            f"#{result_id} {result['home_team']} {home_score}-{away_score} {result['away_team']}",
+        )
+        return web.json_response({"ok": True})
+
+    async def delete_result(self, request):
+        self.require_api(request)
+        data = await request.json()
+        guild_id = int(data["guild_id"])
+        result_id = int(data["result_id"])
+        result = self.db.result(guild_id, result_id)
+        if result is None:
+            raise web.HTTPNotFound(text="Result not found")
+        self.db.delete_result(guild_id, result_id)
+        self.db.add_audit(
+            guild_id, None, "Dashboard result deleted",
+            f"#{result_id} {result['home_team']} {result['home_score']}-{result['away_score']} {result['away_team']}",
+        )
+        return web.json_response({"ok": True})
+
     async def budget(self, request):
         self.require_api(request); data = await request.json(); guild_id = int(data["guild_id"]); amount = max(0, int(data["amount"])); team = self.db.team(guild_id, str(data["team"]))
         if not team: raise web.HTTPBadRequest(text="Unknown team")
@@ -299,6 +335,6 @@ class Dashboard:
 
     async def start(self) -> None:
         app = web.Application(client_max_size=1024 * 1024)
-        app.add_routes([web.get("/", self.home), web.get("/login", self.login_page), web.post("/login", self.login), web.post("/logout", self.logout), web.get("/terms", self.terms), web.get("/terms-of-service", self.terms), web.get("/privacy", self.privacy), web.get("/privacy-policy", self.privacy), web.post("/api/desktop/login", self.desktop_login), web.get("/api/guilds", self.guilds), web.get("/api/state", self.state), web.get("/api/public/league", self.public_league), web.post("/api/toggle", self.toggle), web.post("/api/toggle-all", self.toggle_all), web.post("/api/budget", self.budget), web.post("/api/team", self.add_team), web.post("/api/team-logo", self.team_logo), web.post("/api/fixture", self.add_fixture), web.post("/api/trophy", self.add_trophy), web.post("/api/trophy-award", self.award_trophy), web.post("/api/window", self.window), web.get("/manifest.json", self.manifest), web.get("/sw.js", self.service_worker)])
+        app.add_routes([web.get("/", self.home), web.get("/login", self.login_page), web.post("/login", self.login), web.post("/logout", self.logout), web.get("/terms", self.terms), web.get("/terms-of-service", self.terms), web.get("/privacy", self.privacy), web.get("/privacy-policy", self.privacy), web.post("/api/desktop/login", self.desktop_login), web.get("/api/guilds", self.guilds), web.get("/api/state", self.state), web.get("/api/public/league", self.public_league), web.post("/api/toggle", self.toggle), web.post("/api/toggle-all", self.toggle_all), web.post("/api/result-update", self.update_result), web.post("/api/result-delete", self.delete_result), web.post("/api/budget", self.budget), web.post("/api/team", self.add_team), web.post("/api/team-logo", self.team_logo), web.post("/api/fixture", self.add_fixture), web.post("/api/trophy", self.add_trophy), web.post("/api/trophy-award", self.award_trophy), web.post("/api/window", self.window), web.get("/manifest.json", self.manifest), web.get("/sw.js", self.service_worker)])
         self.runner = web.AppRunner(app); await self.runner.setup(); site = web.TCPSite(self.runner, "0.0.0.0", int(os.getenv("PORT", "8080"))); await site.start()
 
