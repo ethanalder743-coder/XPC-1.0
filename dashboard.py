@@ -26,6 +26,22 @@ def league_table(team_names, results):
     return sorted(table.values(), key=lambda r: (-r["points"], -r["gd"], -r["gf"], r["team"].lower()))
 
 
+def adjusted_league_table(team_names, results, adjustments):
+    table = league_table(team_names, results)
+    for row in table:
+        adjustment = adjustments.get(row["team"].casefold())
+        if not adjustment:
+            continue
+        for field, column in (
+            ("played", "played_delta"), ("won", "won_delta"),
+            ("drawn", "drawn_delta"), ("lost", "lost_delta"),
+            ("gf", "gf_delta"), ("ga", "ga_delta"), ("points", "points_delta"),
+        ):
+            row[field] = max(0, row[field] + int(adjustment[column]))
+        row["gd"] = row["gf"] - row["ga"]
+    return sorted(table, key=lambda row: (-row["points"], -row["gd"], -row["gf"], row["team"].lower()))
+
+
 LOGIN_PAGE = """<!doctype html><html><head><meta name=viewport content='width=device-width,initial-scale=1'><title>XPC Control</title><style>
 body{margin:0;background:#080b12;color:#eef2ff;font:16px system-ui;display:grid;place-items:center;min-height:100vh}.card{width:min(390px,88vw);background:#121827;border:1px solid #29324a;border-radius:20px;padding:30px}h1{margin:0 0 8px;color:#7c8cff}p{color:#9ca7bd}input,button{box-sizing:border-box;width:100%;padding:13px;border-radius:10px;border:1px solid #34405d;background:#0b1020;color:white;margin-top:12px}button{background:#5865f2;border:0;font-weight:700;cursor:pointer}.error{color:#ff7188}</style></head><body><form class=card method=post action=/login><h1>XPC Control</h1><p>Sign in with your private dashboard password.</p>__ERROR__<input type=password name=password placeholder='Dashboard password' required autofocus><button>Open dashboard</button></form></body></html>"""
 
@@ -181,7 +197,10 @@ class Dashboard:
         trophies = [dict(row) for row in self.db.trophies(guild_id)]
         winners = [dict(row) for row in self.db.trophy_winners(guild_id)]
         results = [dict(row) for row in self.db.results(guild_id)]
-        standings = league_table([team["name"] for team in teams], results)
+        standings = adjusted_league_table(
+            [team["name"] for team in teams], results,
+            self.db.standings_adjustments(guild_id),
+        )
         return web.json_response({"commands": commands, "teams": teams, "roles": roles, "members": members, "logs": logs, "fixtures": fixtures, "trophies": trophies, "trophy_winners": winners, "results": results, "standings": standings, "transfer_window_open": self.db.transfer_window_open(guild_id)})
 
     async def public_league(self, request):
@@ -200,7 +219,7 @@ class Dashboard:
                 member = guild.get_member(int(row["user_id"]))
                 totw.append({"position": label, "user_id": str(row["user_id"]), "username": member.name if member else f"Player {row['user_id']}", "team": row["team_name"], "score": row["score"]})
         results = [dict(row) for row in self.db.results(guild_id)]
-        payload = {"league": {"id": str(guild.id), "name": guild.name, "icon_url": str(guild.icon.url) if guild.icon else None}, "teams": teams, "standings": league_table([t["name"] for t in teams], results), "fixtures": [dict(row) for row in self.db.fixtures(guild_id)], "results": results, "totw": {"week": week, "players": totw}, "trophies": [dict(row) for row in self.db.trophies(guild_id)], "trophy_winners": [dict(row) for row in self.db.trophy_winners(guild_id)]}
+        payload = {"league": {"id": str(guild.id), "name": guild.name, "icon_url": str(guild.icon.url) if guild.icon else None}, "teams": teams, "standings": adjusted_league_table([t["name"] for t in teams], results, self.db.standings_adjustments(guild_id)), "fixtures": [dict(row) for row in self.db.fixtures(guild_id)], "results": results, "totw": {"week": week, "players": totw}, "trophies": [dict(row) for row in self.db.trophies(guild_id)], "trophy_winners": [dict(row) for row in self.db.trophy_winners(guild_id)]}
         response = web.json_response(payload); response.headers["Access-Control-Allow-Origin"] = "*"; response.headers["Cache-Control"] = "public, max-age=30"; return response
 
     async def add_fixture(self, request):
@@ -292,6 +311,47 @@ class Dashboard:
         )
         return web.json_response({"ok": True})
 
+    async def update_standings(self, request):
+        self.require_api(request)
+        data = await request.json()
+        guild_id = int(data["guild_id"])
+        team_name = str(data["team"])
+        team = self.db.team(guild_id, team_name)
+        if team is None:
+            raise web.HTTPBadRequest(text="Unknown team")
+        fields = ("played", "won", "drawn", "lost", "gf", "ga", "points")
+        try:
+            target = {field: int(data[field]) for field in fields}
+        except (KeyError, TypeError, ValueError):
+            raise web.HTTPBadRequest(text="Enter a valid number in every table field.")
+        if any(value < 0 or value > 999 for value in target.values()):
+            raise web.HTTPBadRequest(text="Table values must be between 0 and 999.")
+        if target["played"] != target["won"] + target["drawn"] + target["lost"]:
+            raise web.HTTPBadRequest(text="Played must equal wins + draws + losses.")
+        base_rows = league_table(
+            [row["name"] for row in self.db.teams(guild_id)],
+            [dict(row) for row in self.db.results(guild_id)],
+        )
+        base = next(row for row in base_rows if row["team"].casefold() == team["name"].casefold())
+        self.db.set_standings_adjustment(
+            guild_id, team["name"],
+            target["played"] - base["played"], target["won"] - base["won"],
+            target["drawn"] - base["drawn"], target["lost"] - base["lost"],
+            target["gf"] - base["gf"], target["ga"] - base["ga"],
+            target["points"] - base["points"],
+        )
+        self.db.add_audit(guild_id, None, "Dashboard table updated", team["name"])
+        return web.json_response({"ok": True})
+
+    async def reset_standings(self, request):
+        self.require_api(request)
+        data = await request.json()
+        guild_id = int(data["guild_id"])
+        team_name = str(data["team"])
+        self.db.clear_standings_adjustment(guild_id, team_name)
+        self.db.add_audit(guild_id, None, "Dashboard table reset", team_name)
+        return web.json_response({"ok": True})
+
     async def budget(self, request):
         self.require_api(request); data = await request.json(); guild_id = int(data["guild_id"]); amount = max(0, int(data["amount"])); team = self.db.team(guild_id, str(data["team"]))
         if not team: raise web.HTTPBadRequest(text="Unknown team")
@@ -335,6 +395,6 @@ class Dashboard:
 
     async def start(self) -> None:
         app = web.Application(client_max_size=1024 * 1024)
-        app.add_routes([web.get("/", self.home), web.get("/login", self.login_page), web.post("/login", self.login), web.post("/logout", self.logout), web.get("/terms", self.terms), web.get("/terms-of-service", self.terms), web.get("/privacy", self.privacy), web.get("/privacy-policy", self.privacy), web.post("/api/desktop/login", self.desktop_login), web.get("/api/guilds", self.guilds), web.get("/api/state", self.state), web.get("/api/public/league", self.public_league), web.post("/api/toggle", self.toggle), web.post("/api/toggle-all", self.toggle_all), web.post("/api/result-update", self.update_result), web.post("/api/result-delete", self.delete_result), web.post("/api/budget", self.budget), web.post("/api/team", self.add_team), web.post("/api/team-logo", self.team_logo), web.post("/api/fixture", self.add_fixture), web.post("/api/trophy", self.add_trophy), web.post("/api/trophy-award", self.award_trophy), web.post("/api/window", self.window), web.get("/manifest.json", self.manifest), web.get("/sw.js", self.service_worker)])
+        app.add_routes([web.get("/", self.home), web.get("/login", self.login_page), web.post("/login", self.login), web.post("/logout", self.logout), web.get("/terms", self.terms), web.get("/terms-of-service", self.terms), web.get("/privacy", self.privacy), web.get("/privacy-policy", self.privacy), web.post("/api/desktop/login", self.desktop_login), web.get("/api/guilds", self.guilds), web.get("/api/state", self.state), web.get("/api/public/league", self.public_league), web.post("/api/toggle", self.toggle), web.post("/api/toggle-all", self.toggle_all), web.post("/api/result-update", self.update_result), web.post("/api/result-delete", self.delete_result), web.post("/api/standings-update", self.update_standings), web.post("/api/standings-reset", self.reset_standings), web.post("/api/budget", self.budget), web.post("/api/team", self.add_team), web.post("/api/team-logo", self.team_logo), web.post("/api/fixture", self.add_fixture), web.post("/api/trophy", self.add_trophy), web.post("/api/trophy-award", self.award_trophy), web.post("/api/window", self.window), web.get("/manifest.json", self.manifest), web.get("/sw.js", self.service_worker)])
         self.runner = web.AppRunner(app); await self.runner.setup(); site = web.TCPSite(self.runner, "0.0.0.0", int(os.getenv("PORT", "8080"))); await site.start()
 
