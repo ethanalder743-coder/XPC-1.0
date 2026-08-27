@@ -156,7 +156,9 @@ class Database:
                     panel_channel_id INTEGER NOT NULL,
                     category_id INTEGER NOT NULL,
                     reviewer_role_id INTEGER NOT NULL,
-                    positions TEXT NOT NULL
+                    positions TEXT NOT NULL,
+                    staff_questions TEXT,
+                    manager_questions TEXT
                 );
 
                 CREATE TABLE IF NOT EXISTS staff_applications (
@@ -348,6 +350,11 @@ class Database:
             for column, kind in (("application_type", "TEXT NOT NULL DEFAULT 'Staff'"), ("answers", "TEXT")):
                 if column not in application_columns:
                     db.execute(f"ALTER TABLE staff_applications ADD COLUMN {column} {kind}")
+
+            application_config_columns = {row["name"] for row in db.execute("PRAGMA table_info(staff_application_config)")}
+            for column in ("staff_questions", "manager_questions"):
+                if column not in application_config_columns:
+                    db.execute(f"ALTER TABLE staff_application_config ADD COLUMN {column} TEXT")
 
             budget_columns = {row["name"] for row in db.execute("PRAGMA table_info(budget_config)")}
             if "starting_budget" not in budget_columns:
@@ -837,21 +844,24 @@ class Database:
 
     def configure_staff_applications(
         self, guild_id: int, panel_channel_id: int, category_id: int,
-        reviewer_role_id: int, positions: str,
+        reviewer_role_id: int, positions: str, staff_questions: str,
+        manager_questions: str,
     ) -> None:
         with self.connect() as db:
             db.execute(
                 """
                 INSERT INTO staff_application_config
-                    (guild_id, panel_channel_id, category_id, reviewer_role_id, positions)
-                VALUES (?, ?, ?, ?, ?)
+                    (guild_id, panel_channel_id, category_id, reviewer_role_id, positions, staff_questions, manager_questions)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(guild_id) DO UPDATE SET
                     panel_channel_id = excluded.panel_channel_id,
                     category_id = excluded.category_id,
                     reviewer_role_id = excluded.reviewer_role_id,
-                    positions = excluded.positions
+                    positions = excluded.positions,
+                    staff_questions = excluded.staff_questions,
+                    manager_questions = excluded.manager_questions
                 """,
-                (guild_id, panel_channel_id, category_id, reviewer_role_id, positions),
+                (guild_id, panel_channel_id, category_id, reviewer_role_id, positions, staff_questions, manager_questions),
             )
 
     def staff_application_config(self, guild_id: int) -> sqlite3.Row | None:
