@@ -106,6 +106,9 @@ class Database:
                     primary_rating REAL NOT NULL,
                     defending_rating REAL,
                     score REAL NOT NULL,
+                    summary_url TEXT,
+                    stats_url TEXT,
+                    defending_url TEXT,
                     submitted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     PRIMARY KEY (guild_id, week, user_id)
                 );
@@ -360,6 +363,12 @@ class Database:
             budget_columns = {row["name"] for row in db.execute("PRAGMA table_info(budget_config)")}
             if "starting_budget" not in budget_columns:
                 db.execute("ALTER TABLE budget_config ADD COLUMN starting_budget INTEGER NOT NULL DEFAULT 0")
+
+            totw_columns = {row["name"] for row in db.execute("PRAGMA table_info(totw_submissions)")}
+            for column in ("summary_url", "stats_url", "defending_url"):
+                if column not in totw_columns:
+                    db.execute(f"ALTER TABLE totw_submissions ADD COLUMN {column} TEXT")
+            db.execute("DELETE FROM totw_submissions WHERE user_id < 0")
 
             db.execute(
                 """
@@ -675,14 +684,18 @@ class Database:
         primary_rating: float,
         defending_rating: float | None,
         score: float,
+        summary_url: str | None = None,
+        stats_url: str | None = None,
+        defending_url: str | None = None,
     ) -> None:
         with self.connect() as db:
             db.execute(
                 """
                 INSERT INTO totw_submissions
                     (guild_id, week, user_id, team_name, position_group,
-                     summary_rating, primary_rating, defending_rating, score)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    summary_rating, primary_rating, defending_rating, score,
+                    summary_url, stats_url, defending_url)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(guild_id, week, user_id) DO UPDATE SET
                     team_name = excluded.team_name,
                     position_group = excluded.position_group,
@@ -690,11 +703,15 @@ class Database:
                     primary_rating = excluded.primary_rating,
                     defending_rating = excluded.defending_rating,
                     score = excluded.score,
+                    summary_url = excluded.summary_url,
+                    stats_url = excluded.stats_url,
+                    defending_url = excluded.defending_url,
                     submitted_at = CURRENT_TIMESTAMP
                 """,
                 (
                     guild_id, week, user_id, team_name, position_group,
                     summary_rating, primary_rating, defending_rating, score,
+                    summary_url, stats_url, defending_url,
                 ),
             )
 
@@ -704,20 +721,12 @@ class Database:
                 db.execute(
                     """
                     SELECT * FROM totw_submissions
-                    WHERE guild_id = ? AND week = ?
+                    WHERE guild_id = ? AND week = ? AND user_id > 0
                     ORDER BY score DESC, summary_rating DESC, submitted_at ASC
                     """,
                     (guild_id, week),
                 )
             )
-
-    def clear_totw_test_submissions(self, guild_id: int, week: int) -> int:
-        with self.connect() as db:
-            cursor = db.execute(
-                "DELETE FROM totw_submissions WHERE guild_id = ? AND week = ? AND user_id < 0",
-                (guild_id, week),
-            )
-            return cursor.rowcount
 
     def configure_budget_channel(self, guild_id: int, channel_id: int, starting_budget: int) -> None:
         with self.connect() as db:
