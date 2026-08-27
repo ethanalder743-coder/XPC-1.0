@@ -1218,6 +1218,42 @@ class ClubManagement(commands.Cog):
             f"TOTW submissions are now open for week **{week}**.", ephemeral=True
         )
 
+    @app_commands.command(name="totwtestdata", description="Create a complete fake TOTW lineup for testing")
+    @app_commands.guild_only()
+    @app_commands.checks.has_permissions(administrator=True)
+    async def totwtestdata(self, interaction: discord.Interaction):
+        week = self.db.totw_week(interaction.guild_id)
+        self.db.clear_totw_test_submissions(interaction.guild_id, week)
+        team_names = [team["name"] for team in self.db.teams(interaction.guild_id)] or ["Test FC"]
+        positions = ["GK", "CB/FB", "CB/FB", "CB/FB", "CDM", "CDM", "CAM", "WM", "WM", "ST", "ST"]
+        for index, position in enumerate(positions, 1):
+            summary = round(9.8 - index * 0.12, 1)
+            primary = round(9.6 - index * 0.10, 1)
+            defending = round(9.4 - index * 0.08, 1) if position == "CDM" else None
+            score = summary * 0.60 + primary * 0.40
+            if position == "CDM":
+                score = summary * 0.50 + primary * 0.25 + defending * 0.25
+            self.db.save_totw_submission(
+                interaction.guild_id, week, -index,
+                team_names[(index - 1) % len(team_names)], position,
+                summary, primary, defending, round(score, 3),
+            )
+        await interaction.response.send_message(
+            f"Added **11 fake players** for Week **{week}**. Run `/totwlist` to test the full 3-5-2 lineup. Use `/totwcleartest` when finished.",
+            ephemeral=True,
+        )
+
+    @app_commands.command(name="totwcleartest", description="Remove fake TOTW test players from the active week")
+    @app_commands.guild_only()
+    @app_commands.checks.has_permissions(administrator=True)
+    async def totwcleartest(self, interaction: discord.Interaction):
+        week = self.db.totw_week(interaction.guild_id)
+        removed = self.db.clear_totw_test_submissions(interaction.guild_id, week)
+        await interaction.response.send_message(
+            f"Removed **{removed}** fake TOTW test entries from Week **{week}**. Real submissions were not changed.",
+            ephemeral=True,
+        )
+
     @app_commands.command(name="uploadstats", description="Upload your FC performance screenshots for TOTW")
     @app_commands.guild_only()
     @app_commands.describe(
@@ -1320,8 +1356,12 @@ class ClubManagement(commands.Cog):
             for index in range(count):
                 if index < len(candidates):
                     row = candidates[index]
+                    player_name = (
+                        f"**Test Player {abs(row['user_id'])}**"
+                        if row["user_id"] < 0 else f"<@{row['user_id']}>"
+                    )
                     lines.append(
-                        f"**{label}**  <@{row['user_id']}>  -  {row['team_name']}  -  `{row['score']:.2f}`"
+                        f"**{label}**  {player_name}  -  {row['team_name']}  -  `{row['score']:.2f}`"
                     )
                     selected_count += 1
                 else:
@@ -1907,7 +1947,7 @@ class ClubManagement(commands.Cog):
             "**Community:** `/poll` `/pollconfig` `/ticketsetup` `/applicationsetup` `/rolesaversetup` `/welcomesetup` `/rulesembed`\n"
             "**Moderation:** `/moderationsetup` `/warn` `/warnings` `/kick` `/ban` `/timeout` `/purge`\n"
             "**Safety & recovery:** `/channelbackup` `/channelbackups` `/restorechannel` `/invites`\n"
-            "**TOTW:** `/uploadstats` `/totwlist` `/totwsetweek`"
+            "**TOTW:** `/uploadstats` `/totwlist` `/totwsetweek` `/totwtestdata` `/totwcleartest`"
         )
         embed = discord.Embed(title="XPC COMMAND HELP", description=text, color=discord.Color.blurple())
         embed.set_footer(text="Made By EthanCoys")
