@@ -311,7 +311,11 @@ class TicketProblemSelect(discord.ui.Select):
         self.bot = bot
         self.db = database
         options = [
-            discord.SelectOption(label=problem[:100], value=problem[:100])
+            discord.SelectOption(
+                label=problem[:100],
+                value=problem[:100],
+                description=f"Open a {problem[:70]} ticket",
+            )
             for problem in problems[:25]
         ] or [discord.SelectOption(label="General Support", value="General Support")]
         super().__init__(
@@ -360,8 +364,9 @@ class TicketProblemSelect(discord.ui.Select):
             ),
         }
         safe_user = re.sub(r"[^a-z0-9-]", "-", interaction.user.name.lower()).strip("-")
+        safe_problem = re.sub(r"[^a-z0-9-]", "-", self.values[0].lower()).strip("-")
         channel = await interaction.guild.create_text_channel(
-            name=f"ticket-{safe_user or interaction.user.id}"[:100],
+            name=f"{safe_problem or 'ticket'}-{safe_user or interaction.user.id}"[:100],
             category=category,
             overwrites=overwrites,
             reason=f"Ticket opened by {interaction.user}",
@@ -2514,7 +2519,7 @@ class ClubManagement(commands.Cog):
         panel_channel="Channel where users open tickets",
         ticket_category="Category where private ticket channels are created",
         support_role="Role that can view tickets and gets pinged",
-        problems="Problem choices separated by commas",
+        problems="Ticket choices separated with |, for example Support | Report | Partnership",
     )
     async def ticketsetup(
         self,
@@ -2522,14 +2527,17 @@ class ClubManagement(commands.Cog):
         panel_channel: discord.TextChannel,
         ticket_category: discord.CategoryChannel,
         support_role: discord.Role,
-        problems: str = "General Support,Report a Player,Team Issue,Transfer Issue,Other",
+        problems: str,
     ):
-        problem_list = [item.strip() for item in problems.split(",") if item.strip()]
+        problem_list = [item.strip() for item in problems.replace(",", "|").split("|") if item.strip()]
         if not problem_list:
             await interaction.response.send_message("Add at least one problem type.", ephemeral=True)
             return
         if len(problem_list) > 25:
             await interaction.response.send_message("You can configure up to 25 problem types.", ephemeral=True)
+            return
+        if any(len(problem) > 100 for problem in problem_list):
+            await interaction.response.send_message("Each ticket type must be 100 characters or fewer.", ephemeral=True)
             return
         self.db.configure_tickets(
             interaction.guild_id,
@@ -2539,9 +2547,9 @@ class ClubManagement(commands.Cog):
             "\n".join(problem_list),
         )
         embed = discord.Embed(
-            title="SUPPORT TICKETS",
+            title="CHOOSE A TICKET TYPE",
             description=(
-                "Choose the problem you need help with below.\n\n"
+                "Select the tab that best matches what you need help with.\n\n"
                 "A private channel will be created for you and the support team."
             ),
             color=discord.Color.blurple(),
