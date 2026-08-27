@@ -183,6 +183,46 @@ class Database:
                     PRIMARY KEY (guild_id, user_id)
                 );
 
+                CREATE TABLE IF NOT EXISTS moderation_config (
+                    guild_id INTEGER PRIMARY KEY,
+                    log_channel_id INTEGER NOT NULL,
+                    scam_protection INTEGER NOT NULL DEFAULT 1
+                );
+
+                CREATE TABLE IF NOT EXISTS warnings (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    guild_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    moderator_id INTEGER NOT NULL,
+                    reason TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE TABLE IF NOT EXISTS channel_backups (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    guild_id INTEGER NOT NULL,
+                    channel_id INTEGER NOT NULL,
+                    name TEXT NOT NULL,
+                    channel_type TEXT NOT NULL,
+                    category_id INTEGER,
+                    position INTEGER NOT NULL,
+                    topic TEXT,
+                    nsfw INTEGER NOT NULL DEFAULT 0,
+                    slowmode INTEGER NOT NULL DEFAULT 0,
+                    overwrites TEXT NOT NULL,
+                    backed_up_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE (guild_id, channel_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS invite_joins (
+                    guild_id INTEGER NOT NULL,
+                    joined_user_id INTEGER NOT NULL,
+                    inviter_id INTEGER,
+                    invite_code TEXT,
+                    joined_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (guild_id, joined_user_id)
+                );
+
                 CREATE TABLE IF NOT EXISTS league_config (
                     guild_id INTEGER PRIMARY KEY,
                     franchise_role_id INTEGER,
@@ -829,6 +869,59 @@ class Database:
         with self.connect() as db:
             row = db.execute("SELECT role_ids FROM saved_member_roles WHERE guild_id = ? AND user_id = ?", (guild_id, user_id)).fetchone()
         return [int(value) for value in row["role_ids"].split(",") if value] if row and row["role_ids"] else []
+
+    def configure_moderation(self, guild_id: int, log_channel_id: int, scam_protection: bool = True) -> None:
+        with self.connect() as db:
+            db.execute(
+                """INSERT INTO moderation_config (guild_id, log_channel_id, scam_protection) VALUES (?, ?, ?)
+                ON CONFLICT(guild_id) DO UPDATE SET log_channel_id=excluded.log_channel_id, scam_protection=excluded.scam_protection""",
+                (guild_id, log_channel_id, int(scam_protection)),
+            )
+
+    def moderation_config(self, guild_id: int) -> sqlite3.Row | None:
+        with self.connect() as db:
+            return db.execute("SELECT * FROM moderation_config WHERE guild_id = ?", (guild_id,)).fetchone()
+
+    def add_warning(self, guild_id: int, user_id: int, moderator_id: int, reason: str) -> int:
+        with self.connect() as db:
+            cursor = db.execute("INSERT INTO warnings (guild_id, user_id, moderator_id, reason) VALUES (?, ?, ?, ?)", (guild_id, user_id, moderator_id, reason[:1000]))
+            return int(cursor.lastrowid)
+
+    def warnings_for(self, guild_id: int, user_id: int) -> list[sqlite3.Row]:
+        with self.connect() as db:
+            return list(db.execute("SELECT * FROM warnings WHERE guild_id = ? AND user_id = ? ORDER BY id DESC", (guild_id, user_id)))
+
+    def save_channel_backup(self, guild_id: int, channel_id: int, name: str, channel_type: str, category_id: int | None, position: int, topic: str | None, nsfw: bool, slowmode: int, overwrites: str) -> int:
+        with self.connect() as db:
+            db.execute(
+                """INSERT INTO channel_backups (guild_id, channel_id, name, channel_type, category_id, position, topic, nsfw, slowmode, overwrites)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(guild_id, channel_id) DO UPDATE SET name=excluded.name, channel_type=excluded.channel_type, category_id=excluded.category_id, position=excluded.position, topic=excluded.topic, nsfw=excluded.nsfw, slowmode=excluded.slowmode, overwrites=excluded.overwrites, backed_up_at=CURRENT_TIMESTAMP""",
+                (guild_id, channel_id, name, channel_type, category_id, position, topic, int(nsfw), slowmode, overwrites),
+            )
+            row = db.execute("SELECT id FROM channel_backups WHERE guild_id = ? AND channel_id = ?", (guild_id, channel_id)).fetchone()
+            return int(row["id"])
+
+    def channel_backups(self, guild_id: int) -> list[sqlite3.Row]:
+        with self.connect() as db:
+            return list(db.execute("SELECT * FROM channel_backups WHERE guild_id = ? ORDER BY id DESC", (guild_id,)))
+
+    def channel_backup(self, guild_id: int, backup_id: int) -> sqlite3.Row | None:
+        with self.connect() as db:
+            return db.execute("SELECT * FROM channel_backups WHERE guild_id = ? AND id = ?", (guild_id, backup_id)).fetchone()
+
+    def record_invite_join(self, guild_id: int, joined_user_id: int, inviter_id: int | None, invite_code: str | None) -> None:
+        with self.connect() as db:
+            db.execute("INSERT OR REPLACE INTO invite_joins (guild_id, joined_user_id, inviter_id, invite_code) VALUES (?, ?, ?, ?)", (guild_id, joined_user_id, inviter_id, invite_code))
+
+    def invite_count(self, guild_id: int, inviter_id: int) -> int:
+        with self.connect() as db:
+            row = db.execute("SELECT COUNT(*) amount FROM invite_joins WHERE guild_id = ? AND inviter_id = ?", (guild_id, inviter_id)).fetchone()
+        return int(row["amount"])
+
+    def invite_join(self, guild_id: int, user_id: int) -> sqlite3.Row | None:
+        with self.connect() as db:
+            return db.execute("SELECT * FROM invite_joins WHERE guild_id = ? AND joined_user_id = ?", (guild_id, user_id)).fetchone()
 
     def staff_application(self, channel_id: int) -> sqlite3.Row | None:
         with self.connect() as db:
