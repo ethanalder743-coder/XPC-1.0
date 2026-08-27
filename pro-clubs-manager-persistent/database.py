@@ -22,7 +22,8 @@ class Database:
                     signing_channel_id INTEGER,
                     release_channel_id INTEGER,
                     manager_role_1_id INTEGER,
-                    manager_role_2_id INTEGER
+                    manager_role_2_id INTEGER,
+                    signing_remove_role_id INTEGER
                 );
 
                 CREATE TABLE IF NOT EXISTS teams (
@@ -332,7 +333,7 @@ class Database:
 
             # Upgrade databases created by older versions without losing teams.
             columns = {row["name"] for row in db.execute("PRAGMA table_info(guild_config)")}
-            for column in ("manager_role_1_id", "manager_role_2_id"):
+            for column in ("manager_role_1_id", "manager_role_2_id", "signing_remove_role_id"):
                 if column not in columns:
                     db.execute(f"ALTER TABLE guild_config ADD COLUMN {column} INTEGER")
 
@@ -445,6 +446,13 @@ class Database:
             return db.execute(
                 "SELECT * FROM guild_config WHERE guild_id = ?", (guild_id,)
             ).fetchone()
+
+    def set_signing_remove_role(self, guild_id: int, role_id: int | None) -> None:
+        with self.connect() as db:
+            db.execute(
+                "UPDATE guild_config SET signing_remove_role_id = ? WHERE guild_id = ?",
+                (role_id, guild_id),
+            )
 
     def create_offer(
         self,
