@@ -415,6 +415,24 @@ class Dashboard:
             await cog.refresh_budget_message(guild)
         return web.json_response({"ok": True})
 
+    async def budgets_bulk(self, request):
+        self.require_api(request)
+        data = await request.json(); guild_id = int(data["guild_id"]); updates = data.get("budgets", [])
+        if not isinstance(updates, list) or not updates:
+            raise web.HTTPBadRequest(text="No budget changes were supplied.")
+        changed = []
+        for item in updates:
+            team = self.db.team(guild_id, str(item.get("team", "")))
+            try: amount = int(item.get("amount"))
+            except (TypeError, ValueError): raise web.HTTPBadRequest(text="Every budget must be a whole number.")
+            if not team or amount < 0 or amount > 999999:
+                raise web.HTTPBadRequest(text="Choose valid teams and non-negative budgets.")
+            self.db.set_team_budget(guild_id, team["name"], amount); changed.append(f"{team['name']}={amount}M")
+        self.db.add_audit(guild_id, None, "Dashboard budgets updated", ", ".join(changed))
+        cog = self.bot.get_cog("ClubManagement"); guild = self.bot.get_guild(guild_id)
+        if cog and guild: await cog.refresh_budget_message(guild)
+        return web.json_response({"ok": True, "count": len(changed)})
+
     async def add_team(self, request):
         self.require_api(request)
         data = await request.json(); guild_id = int(data["guild_id"]); guild = self.bot.get_guild(guild_id)
@@ -448,6 +466,6 @@ class Dashboard:
 
     async def start(self) -> None:
         app = web.Application(client_max_size=1024 * 1024)
-        app.add_routes([web.get("/", self.home), web.get("/login", self.login_page), web.post("/login", self.login), web.post("/logout", self.logout), web.get("/terms", self.terms), web.get("/terms-of-service", self.terms), web.get("/privacy", self.privacy), web.get("/privacy-policy", self.privacy), web.post("/api/desktop/login", self.desktop_login), web.get("/api/guilds", self.guilds), web.get("/api/state", self.state), web.get("/api/public/league", self.public_league), web.post("/api/toggle", self.toggle), web.post("/api/toggle-all", self.toggle_all), web.post("/api/result-update", self.update_result), web.post("/api/result-delete", self.delete_result), web.post("/api/standings-update", self.update_standings), web.post("/api/standings-reset", self.reset_standings), web.post("/api/server-setup", self.server_setup), web.post("/api/budget", self.budget), web.post("/api/team", self.add_team), web.post("/api/team-edit", self.edit_team), web.post("/api/team-delete", self.delete_team), web.post("/api/team-logo", self.team_logo), web.post("/api/fixture", self.add_fixture), web.post("/api/trophy", self.add_trophy), web.post("/api/trophy-award", self.award_trophy), web.post("/api/window", self.window), web.get("/manifest.json", self.manifest), web.get("/sw.js", self.service_worker)])
+        app.add_routes([web.get("/", self.home), web.get("/login", self.login_page), web.post("/login", self.login), web.post("/logout", self.logout), web.get("/terms", self.terms), web.get("/terms-of-service", self.terms), web.get("/privacy", self.privacy), web.get("/privacy-policy", self.privacy), web.post("/api/desktop/login", self.desktop_login), web.get("/api/guilds", self.guilds), web.get("/api/state", self.state), web.get("/api/public/league", self.public_league), web.post("/api/toggle", self.toggle), web.post("/api/toggle-all", self.toggle_all), web.post("/api/result-update", self.update_result), web.post("/api/result-delete", self.delete_result), web.post("/api/standings-update", self.update_standings), web.post("/api/standings-reset", self.reset_standings), web.post("/api/server-setup", self.server_setup), web.post("/api/budget", self.budget), web.post("/api/budgets-bulk", self.budgets_bulk), web.post("/api/team", self.add_team), web.post("/api/team-edit", self.edit_team), web.post("/api/team-delete", self.delete_team), web.post("/api/team-logo", self.team_logo), web.post("/api/fixture", self.add_fixture), web.post("/api/trophy", self.add_trophy), web.post("/api/trophy-award", self.award_trophy), web.post("/api/window", self.window), web.get("/manifest.json", self.manifest), web.get("/sw.js", self.service_worker)])
         self.runner = web.AppRunner(app); await self.runner.setup(); site = web.TCPSite(self.runner, "0.0.0.0", int(os.getenv("PORT", "8080"))); await site.start()
 
