@@ -802,7 +802,7 @@ class ClubManagement(commands.Cog):
         )
         if interaction.guild_id and not self.db.command_enabled(interaction.guild_id, command_name):
             await interaction.response.send_message(
-                "That command is currently disabled by the bot dashboard.", ephemeral=True
+                "This command is down at the moment. Please try again later.", ephemeral=True
             )
             return False
         return True
@@ -2328,6 +2328,58 @@ class ClubManagement(commands.Cog):
         self.db.add_result(interaction.guild_id, home["name"], away["name"], home_score, away_score, interaction.user.id)
         await interaction.response.send_message(f"**{home['name']} {home_score}–{away_score} {away['name']}**")
 
+    @app_commands.command(name="results", description="Show submitted league results and their IDs")
+    @app_commands.guild_only()
+    async def results_command(self, interaction: discord.Interaction):
+        rows = self.db.results(interaction.guild_id)
+        lines = [
+            f"`#{row['id']}` **{row['home_team']} {row['home_score']}–{row['away_score']} {row['away_team']}**"
+            for row in reversed(rows[-25:])
+        ]
+        embed = discord.Embed(
+            title="LEAGUE RESULTS",
+            description="\n".join(lines) or "No results have been submitted yet.",
+            color=discord.Color.blurple(),
+        )
+        embed.set_footer(text="Use the result ID with /updateresult or /deleteresult")
+        await interaction.response.send_message(embed=embed)
+
+    @app_commands.command(name="updateresult", description="Correct the score of a submitted result")
+    @app_commands.guild_only()
+    async def updateresult(
+        self,
+        interaction: discord.Interaction,
+        result_id: int,
+        home_score: app_commands.Range[int, 0, 99],
+        away_score: app_commands.Range[int, 0, 99],
+    ):
+        if not await self.require_franchise_owner(interaction):
+            return
+        row = self.db.result(interaction.guild_id, result_id)
+        if row is None:
+            await interaction.response.send_message("That result ID was not found.", ephemeral=True)
+            return
+        self.db.update_result(interaction.guild_id, result_id, home_score, away_score)
+        await interaction.response.send_message(
+            f"Updated `#{result_id}` — **{row['home_team']} {home_score}–{away_score} {row['away_team']}**\n"
+            "The league table has been recalculated automatically."
+        )
+
+    @app_commands.command(name="deleteresult", description="Delete an incorrect submitted result")
+    @app_commands.guild_only()
+    async def deleteresult(self, interaction: discord.Interaction, result_id: int):
+        if not await self.require_franchise_owner(interaction):
+            return
+        row = self.db.result(interaction.guild_id, result_id)
+        if row is None:
+            await interaction.response.send_message("That result ID was not found.", ephemeral=True)
+            return
+        self.db.delete_result(interaction.guild_id, result_id)
+        await interaction.response.send_message(
+            f"Deleted `#{result_id}` — **{row['home_team']} {row['home_score']}–{row['away_score']} {row['away_team']}**\n"
+            "The league table has been recalculated automatically."
+        )
+
     @app_commands.command(name="standings", description="Show the current league standings")
     @app_commands.guild_only()
     async def standings(self, interaction: discord.Interaction):
@@ -2396,7 +2448,7 @@ class ClubManagement(commands.Cog):
             "**Clubs:** `/offer` `/release` `/roster` `/allrosters` `/myoffers` `/canceloffer` `/signingremoverole`\n"
             "**Transfers:** `/transfer` `/loan` `/endloan` `/recallloan` `/loans` `/openwindow` `/closewindow`\n"
             "**Budgets:** `/budgetsetup` `/setbudget` `/budgets`\n"
-            "**League:** `/result` `/standings` `/endseason`\n"
+            "**League:** `/result` `/results` `/updateresult` `/deleteresult` `/standings` `/endseason`\n"
             "**Teams:** `/addteam` `/editteam` `/removeteam` `/transferownership` `/teamoffers`\n"
             "**Franchise Owners:** `/franchiseconfig` `/appointfranchiseowner` `/removefranchiseowner` `/franchiseowners`\n"
             "**Staff:** `/promote` `/demoteco` `/forcepromote` `/forcedemote` `/forcesign` `/forcerelease`\n"
