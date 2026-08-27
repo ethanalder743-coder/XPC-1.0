@@ -223,6 +223,38 @@ class Database:
                     PRIMARY KEY (guild_id, joined_user_id)
                 );
 
+                CREATE TABLE IF NOT EXISTS premium_guilds (
+                    guild_id INTEGER PRIMARY KEY,
+                    expires_at TEXT,
+                    granted_by INTEGER,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE TABLE IF NOT EXISTS premium_bypass (
+                    user_id INTEGER PRIMARY KEY,
+                    added_by INTEGER NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE TABLE IF NOT EXISTS premium_codes (
+                    code_hash TEXT PRIMARY KEY,
+                    days INTEGER NOT NULL,
+                    created_by INTEGER NOT NULL,
+                    redeemed_by INTEGER,
+                    redeemed_guild_id INTEGER,
+                    redeemed_at TEXT,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE TABLE IF NOT EXISTS premium_branding (
+                    guild_id INTEGER PRIMARY KEY,
+                    display_name TEXT,
+                    accent_color INTEGER NOT NULL DEFAULT 5793266,
+                    logo_url TEXT,
+                    banner_url TEXT,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+
                 CREATE TABLE IF NOT EXISTS league_config (
                     guild_id INTEGER PRIMARY KEY,
                     franchise_role_id INTEGER,
@@ -922,6 +954,56 @@ class Database:
     def invite_join(self, guild_id: int, user_id: int) -> sqlite3.Row | None:
         with self.connect() as db:
             return db.execute("SELECT * FROM invite_joins WHERE guild_id = ? AND joined_user_id = ?", (guild_id, user_id)).fetchone()
+
+    def grant_premium(self, guild_id: int, days: int | None, granted_by: int) -> None:
+        with self.connect() as db:
+            expires = None if days is None else db.execute("SELECT datetime('now', ?)", (f"+{days} days",)).fetchone()[0]
+            db.execute(
+                """INSERT INTO premium_guilds (guild_id, expires_at, granted_by) VALUES (?, ?, ?)
+                ON CONFLICT(guild_id) DO UPDATE SET expires_at=excluded.expires_at, granted_by=excluded.granted_by, updated_at=CURRENT_TIMESTAMP""",
+                (guild_id, expires, granted_by),
+            )
+
+    def revoke_premium(self, guild_id: int) -> None:
+        with self.connect() as db: db.execute("DELETE FROM premium_guilds WHERE guild_id = ?", (guild_id,))
+
+    def premium_status(self, guild_id: int) -> sqlite3.Row | None:
+        with self.connect() as db: return db.execute("SELECT *, (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP) active FROM premium_guilds WHERE guild_id = ?", (guild_id,)).fetchone()
+
+    def add_premium_bypass(self, user_id: int, added_by: int) -> None:
+        with self.connect() as db: db.execute("INSERT OR REPLACE INTO premium_bypass (user_id, added_by) VALUES (?, ?)", (user_id, added_by))
+
+    def remove_premium_bypass(self, user_id: int) -> None:
+        with self.connect() as db: db.execute("DELETE FROM premium_bypass WHERE user_id = ?", (user_id,))
+
+    def premium_bypass(self, user_id: int) -> bool:
+        with self.connect() as db: return db.execute("SELECT 1 FROM premium_bypass WHERE user_id = ?", (user_id,)).fetchone() is not None
+
+    def premium_bypasses(self) -> list[sqlite3.Row]:
+        with self.connect() as db: return list(db.execute("SELECT * FROM premium_bypass ORDER BY created_at"))
+
+    def create_premium_code(self, code_hash: str, days: int, created_by: int) -> None:
+        with self.connect() as db: db.execute("INSERT INTO premium_codes (code_hash, days, created_by) VALUES (?, ?, ?)", (code_hash, days, created_by))
+
+    def redeem_premium_code(self, code_hash: str, guild_id: int, user_id: int) -> int | None:
+        with self.connect() as db:
+            row = db.execute("SELECT days FROM premium_codes WHERE code_hash = ? AND redeemed_at IS NULL", (code_hash,)).fetchone()
+            if not row: return None
+            db.execute("UPDATE premium_codes SET redeemed_by=?, redeemed_guild_id=?, redeemed_at=CURRENT_TIMESTAMP WHERE code_hash=? AND redeemed_at IS NULL", (user_id, guild_id, code_hash))
+            days = int(row["days"])
+            current = db.execute("SELECT expires_at FROM premium_guilds WHERE guild_id = ? AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)", (guild_id,)).fetchone()
+            base = current["expires_at"] if current and current["expires_at"] else None
+            expires = db.execute("SELECT datetime(COALESCE(?, CURRENT_TIMESTAMP), ?)", (base, f"+{days} days")).fetchone()[0]
+            db.execute("INSERT INTO premium_guilds (guild_id, expires_at, granted_by) VALUES (?, ?, ?) ON CONFLICT(guild_id) DO UPDATE SET expires_at=excluded.expires_at, granted_by=excluded.granted_by, updated_at=CURRENT_TIMESTAMP", (guild_id, expires, user_id))
+            return days
+
+    def set_premium_branding(self, guild_id: int, display_name: str | None, accent_color: int, logo_url: str | None, banner_url: str | None) -> None:
+        with self.connect() as db:
+            db.execute("""INSERT INTO premium_branding (guild_id, display_name, accent_color, logo_url, banner_url) VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(guild_id) DO UPDATE SET display_name=excluded.display_name, accent_color=excluded.accent_color, logo_url=excluded.logo_url, banner_url=excluded.banner_url, updated_at=CURRENT_TIMESTAMP""", (guild_id, display_name, accent_color, logo_url, banner_url))
+
+    def premium_branding(self, guild_id: int) -> sqlite3.Row | None:
+        with self.connect() as db: return db.execute("SELECT * FROM premium_branding WHERE guild_id = ?", (guild_id,)).fetchone()
 
     def staff_application(self, channel_id: int) -> sqlite3.Row | None:
         with self.connect() as db:
