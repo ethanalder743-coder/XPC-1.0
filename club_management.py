@@ -1932,7 +1932,7 @@ class ClubManagement(commands.Cog):
             "**Community:** `/poll` `/pollconfig` `/ticketsetup` `/applicationsetup` `/rolesaversetup` `/welcomesetup` `/rulesembed`\n"
             "**Moderation:** `/moderationsetup` `/warn` `/warnings` `/kick` `/ban` `/timeout` `/purge`\n"
             "**Safety & recovery:** `/channelbackup` `/channelbackups` `/restorechannel` `/invites`\n"
-            "**Premium:** `/premium` `/premiumunlock` `/premiumredeem` `/premiumprofile` `/premiumannounce`\n"
+            "**Premium:** `/premium` `/premiumunlock` `/premiumredeem` `/premiumusername` `/premiumprofile` `/premiumannounce`\n"
             "**TOTW:** `/uploadstats` `/totwlist` `/totwsetweek`"
         )
         embed = discord.Embed(title="XPC COMMAND HELP", description=text, color=discord.Color.blurple())
@@ -2316,6 +2316,38 @@ class ClubManagement(commands.Cog):
         if logo_url: embed.set_thumbnail(url=logo_url)
         if banner_url: embed.set_image(url=banner_url)
         await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @app_commands.command(name="premiumusername", description="Change the bot's visible name in this server")
+    @app_commands.guild_only()
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def premiumusername(self, interaction: discord.Interaction, username: str):
+        if not await self.require_premium(interaction):
+            return
+        username = username.strip()
+        if not 1 <= len(username) <= 32:
+            await interaction.response.send_message("The server bot name must be between 1 and 32 characters.", ephemeral=True)
+            return
+        bot_member = interaction.guild.me
+        if bot_member is None:
+            await interaction.response.send_message("I could not find my bot member in this server.", ephemeral=True)
+            return
+        try:
+            await bot_member.edit(nick=username, reason=f"Premium server name changed by {interaction.user}")
+        except discord.Forbidden:
+            await interaction.response.send_message("I cannot change my server name. Give the bot **Change Nickname** permission and make sure its role is high enough.", ephemeral=True)
+            return
+        except discord.HTTPException:
+            await interaction.response.send_message("Discord rejected that name. Try a different one.", ephemeral=True)
+            return
+        current = self.db.premium_branding(interaction.guild_id)
+        self.db.set_premium_branding(
+            interaction.guild_id,
+            username,
+            int(current["accent_color"]) if current else discord.Color.blurple().value,
+            current["logo_url"] if current else None,
+            current["banner_url"] if current else None,
+        )
+        await interaction.response.send_message(f"The bot is now shown as **{username}** in this server.", ephemeral=True)
 
     @app_commands.command(name="premiumannounce", description="Post a branded Premium announcement")
     @app_commands.guild_only()
