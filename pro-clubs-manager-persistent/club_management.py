@@ -1130,6 +1130,34 @@ class ClubManagement(commands.Cog):
         )
         return False
 
+    def league_rows(self, guild_id: int, adjusted: bool = True):
+        table = {
+            team["name"]: {"p": 0, "w": 0, "d": 0, "l": 0, "gf": 0, "ga": 0, "pts": 0}
+            for team in self.db.teams(guild_id)
+        }
+        for row in self.db.results(guild_id):
+            if row["home_team"] not in table or row["away_team"] not in table:
+                continue
+            home, away = table[row["home_team"]], table[row["away_team"]]
+            home["p"] += 1; away["p"] += 1
+            home["gf"] += row["home_score"]; home["ga"] += row["away_score"]
+            away["gf"] += row["away_score"]; away["ga"] += row["home_score"]
+            if row["home_score"] > row["away_score"]:
+                home["w"] += 1; home["pts"] += 3; away["l"] += 1
+            elif row["home_score"] < row["away_score"]:
+                away["w"] += 1; away["pts"] += 3; home["l"] += 1
+            else:
+                home["d"] += 1; away["d"] += 1; home["pts"] += 1; away["pts"] += 1
+        if adjusted:
+            adjustments = self.db.standings_adjustments(guild_id)
+            for name, stats in table.items():
+                row = adjustments.get(name.casefold())
+                if not row:
+                    continue
+                for key, column in (("p", "played_delta"), ("w", "won_delta"), ("d", "drawn_delta"), ("l", "lost_delta"), ("gf", "gf_delta"), ("ga", "ga_delta"), ("pts", "points_delta")):
+                    stats[key] = max(0, stats[key] + int(row[column]))
+        return table
+
     def managed_team_for(self, member: discord.Member):
         role_ids = {role.id for role in member.roles}
         matches = [
@@ -2385,26 +2413,57 @@ class ClubManagement(commands.Cog):
     async def standings(self, interaction: discord.Interaction):
         if not await self.require_franchise_owner(interaction):
             return
-        table = {team["name"]: {"p": 0, "w": 0, "d": 0, "l": 0, "gf": 0, "ga": 0, "pts": 0} for team in self.db.teams(interaction.guild_id)}
-        for row in self.db.results(interaction.guild_id):
-            if row["home_team"] not in table or row["away_team"] not in table:
-                continue
-            home, away = table[row["home_team"]], table[row["away_team"]]
-            home["p"] += 1; away["p"] += 1
-            home["gf"] += row["home_score"]; home["ga"] += row["away_score"]
-            away["gf"] += row["away_score"]; away["ga"] += row["home_score"]
-            if row["home_score"] > row["away_score"]:
-                home["w"] += 1; home["pts"] += 3; away["l"] += 1
-            elif row["home_score"] < row["away_score"]:
-                away["w"] += 1; away["pts"] += 3; home["l"] += 1
-            else:
-                home["d"] += 1; away["d"] += 1; home["pts"] += 1; away["pts"] += 1
+        table = self.league_rows(interaction.guild_id)
         ordered = sorted(table.items(), key=lambda item: (item[1]["pts"], item[1]["gf"] - item[1]["ga"], item[1]["gf"]), reverse=True)
         lines = ["`#  TEAM                 P  W  D  L  GD PTS`"]
         for index, (name, stats) in enumerate(ordered, 1):
             gd = stats["gf"] - stats["ga"]
             lines.append(f"`{index:>2} {name[:18]:<18} {stats['p']:>2} {stats['w']:>2} {stats['d']:>2} {stats['l']:>2} {gd:>3} {stats['pts']:>3}`")
         await interaction.response.send_message(embed=discord.Embed(title="LEAGUE STANDINGS", description="\n".join(lines), color=discord.Color.gold()))
+
+    @app_commands.command(name="updatetable", description="Manually update one team's league-table row")
+    @app_commands.guild_only()
+    @app_commands.autocomplete(team=team_autocomplete)
+    async def updatetable(
+        self, interaction: discord.Interaction, team: str,
+        played: app_commands.Range[int, 0, 999], won: app_commands.Range[int, 0, 999],
+        drawn: app_commands.Range[int, 0, 999], lost: app_commands.Range[int, 0, 999],
+        goals_for: app_commands.Range[int, 0, 999], goals_against: app_commands.Range[int, 0, 999],
+        points: app_commands.Range[int, 0, 999],
+    ):
+        if not await self.require_franchise_owner(interaction):
+            return
+        record = self.db.team(interaction.guild_id, team)
+        if not record:
+            await interaction.response.send_message("That team is not configured.", ephemeral=True)
+            return
+        if played != won + drawn + lost:
+            await interaction.response.send_message("Played must equal wins + draws + losses.", ephemeral=True)
+            return
+        base = self.league_rows(interaction.guild_id, adjusted=False)[record["name"]]
+        self.db.set_standings_adjustment(
+            interaction.guild_id, record["name"], played - base["p"], won - base["w"],
+            drawn - base["d"], lost - base["l"], goals_for - base["gf"],
+            goals_against - base["ga"], points - base["pts"],
+        )
+        await interaction.response.send_message(
+            f"Updated **{record['name']}** in the league table. Future results will continue from this adjustment."
+        )
+
+    @app_commands.command(name="resettable", description="Remove manual table edits for one team")
+    @app_commands.guild_only()
+    @app_commands.autocomplete(team=team_autocomplete)
+    async def resettable(self, interaction: discord.Interaction, team: str):
+        if not await self.require_franchise_owner(interaction):
+            return
+        record = self.db.team(interaction.guild_id, team)
+        if not record:
+            await interaction.response.send_message("That team is not configured.", ephemeral=True)
+            return
+        self.db.clear_standings_adjustment(interaction.guild_id, record["name"])
+        await interaction.response.send_message(
+            f"Reset **{record['name']}** to the table calculated only from submitted results."
+        )
 
     @app_commands.command(name="logstyle", description="Choose compact or detailed bot logs")
     @app_commands.guild_only()
@@ -2448,7 +2507,7 @@ class ClubManagement(commands.Cog):
             "**Clubs:** `/offer` `/release` `/roster` `/allrosters` `/myoffers` `/canceloffer` `/signingremoverole`\n"
             "**Transfers:** `/transfer` `/loan` `/endloan` `/recallloan` `/loans` `/openwindow` `/closewindow`\n"
             "**Budgets:** `/budgetsetup` `/setbudget` `/budgets`\n"
-            "**League:** `/result` `/results` `/updateresult` `/deleteresult` `/standings` `/endseason`\n"
+            "**League:** `/result` `/results` `/updateresult` `/deleteresult` `/standings` `/updatetable` `/resettable` `/endseason`\n"
             "**Teams:** `/addteam` `/editteam` `/removeteam` `/transferownership` `/teamoffers`\n"
             "**Franchise Owners:** `/franchiseconfig` `/appointfranchiseowner` `/removefranchiseowner` `/franchiseowners`\n"
             "**Staff:** `/promote` `/demoteco` `/forcepromote` `/forcedemote` `/forcesign` `/forcerelease`\n"
