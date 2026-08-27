@@ -1925,7 +1925,7 @@ class ClubManagement(commands.Cog):
             "**Community:** `/poll` `/pollconfig` `/ticketsetup` `/applicationsetup` `/rolesaversetup` `/welcomesetup` `/rulesembed`\n"
             "**Moderation:** `/moderationsetup` `/warn` `/warnings` `/kick` `/ban` `/timeout` `/purge`\n"
             "**Safety & recovery:** `/channelbackup` `/channelbackups` `/restorechannel` `/invites`\n"
-            "**Premium:** `/premium` `/premiumredeem` `/premiumprofile` `/premiumannounce`\n"
+            "**Premium:** `/premium` `/premiumunlock` `/premiumredeem` `/premiumprofile` `/premiumannounce`\n"
             "**TOTW:** `/uploadstats` `/totwlist` `/totwsetweek`"
         )
         embed = discord.Embed(title="XPC COMMAND HELP", description=text, color=discord.Color.blurple())
@@ -2223,6 +2223,19 @@ class ClubManagement(commands.Cog):
         if payment_url and not active: description += f"\n\n[Purchase XPC Premium]({payment_url})"
         if not active: description += "\nAfter purchasing, use `/premiumredeem` with your private code."
         await interaction.response.send_message(embed=discord.Embed(title="XPC PREMIUM", description=description, color=discord.Color.gold()), ephemeral=True)
+
+    @app_commands.command(name="premiumunlock", description="Unlock Premium using an access key")
+    @app_commands.guild_only()
+    async def premiumunlock(self, interaction: discord.Interaction, key: str):
+        expected = os.getenv("PREMIUM_ACCESS_KEY", "").strip()
+        if not expected:
+            await interaction.response.send_message("Premium key access has not been configured yet.", ephemeral=True)
+            return
+        if not secrets.compare_digest(key.strip(), expected):
+            await interaction.response.send_message("That Premium key is incorrect.", ephemeral=True)
+            return
+        self.db.add_premium_bypass(interaction.user.id, interaction.user.id)
+        await interaction.response.send_message("Premium unlocked. You can now use every Premium feature in any server with this bot.", ephemeral=True)
 
     @app_commands.command(name="premiumredeem", description="Redeem a purchased XPC Premium code for this server")
     @app_commands.guild_only()
