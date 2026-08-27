@@ -69,7 +69,10 @@ class Dashboard:
         return bool(self.password) and hmac.compare_digest(request.cookies.get("xpc_session", ""), self.token)
 
     def api_authenticated(self, request: web.Request) -> bool:
-        return self.authenticated(request) and hmac.compare_digest(request.headers.get("X-Dashboard-Token", ""), self.token)
+        bearer = request.headers.get("Authorization", "")
+        bearer_ok = bearer.startswith("Bearer ") and hmac.compare_digest(bearer[7:], self.token)
+        browser_ok = self.authenticated(request) and hmac.compare_digest(request.headers.get("X-Dashboard-Token", ""), self.token)
+        return bearer_ok or browser_ok
 
     async def home(self, request):
         if not self.password:
@@ -92,6 +95,12 @@ class Dashboard:
 
     async def login_page(self, request):
         raise web.HTTPFound("/")
+
+    async def desktop_login(self, request):
+        data = await request.json()
+        if not self.password or not hmac.compare_digest(str(data.get("password", "")), self.password):
+            raise web.HTTPUnauthorized(text="Incorrect dashboard password")
+        return web.json_response({"token": self.token})
 
     async def logout(self, request):
         response = web.HTTPFound("/")
@@ -218,6 +227,6 @@ class Dashboard:
 
     async def start(self) -> None:
         app = web.Application(client_max_size=1024 * 1024)
-        app.add_routes([web.get("/", self.home), web.get("/login", self.login_page), web.post("/login", self.login), web.post("/logout", self.logout), web.get("/api/guilds", self.guilds), web.get("/api/state", self.state), web.get("/api/public/league", self.public_league), web.post("/api/toggle", self.toggle), web.post("/api/budget", self.budget), web.post("/api/team", self.add_team), web.post("/api/team-logo", self.team_logo), web.post("/api/fixture", self.add_fixture), web.post("/api/trophy", self.add_trophy), web.post("/api/trophy-award", self.award_trophy), web.post("/api/window", self.window), web.get("/manifest.json", self.manifest), web.get("/sw.js", self.service_worker)])
+        app.add_routes([web.get("/", self.home), web.get("/login", self.login_page), web.post("/login", self.login), web.post("/logout", self.logout), web.post("/api/desktop/login", self.desktop_login), web.get("/api/guilds", self.guilds), web.get("/api/state", self.state), web.get("/api/public/league", self.public_league), web.post("/api/toggle", self.toggle), web.post("/api/budget", self.budget), web.post("/api/team", self.add_team), web.post("/api/team-logo", self.team_logo), web.post("/api/fixture", self.add_fixture), web.post("/api/trophy", self.add_trophy), web.post("/api/trophy-award", self.award_trophy), web.post("/api/window", self.window), web.get("/manifest.json", self.manifest), web.get("/sw.js", self.service_worker)])
         self.runner = web.AppRunner(app); await self.runner.setup(); site = web.TCPSite(self.runner, "0.0.0.0", int(os.getenv("PORT", "8080"))); await site.start()
 
