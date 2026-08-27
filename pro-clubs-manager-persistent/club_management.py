@@ -975,6 +975,19 @@ class ClubManagement(commands.Cog):
     async def is_global_owner(self, interaction: discord.Interaction) -> bool:
         return await self.bot.is_owner(interaction.user)
 
+    async def require_owner_control(self, interaction: discord.Interaction) -> bool:
+        """Allow only the application owner or the current Discord server owner."""
+        if interaction.guild and (
+            await self.is_global_owner(interaction)
+            or interaction.user.id == interaction.guild.owner_id
+        ):
+            return True
+        await interaction.response.send_message(
+            "Only the bot owner or this Discord server's owner can manage Franchise Owners.",
+            ephemeral=True,
+        )
+        return False
+
     async def require_manager(self, interaction: discord.Interaction) -> bool:
         """Allow administrators or members with either configured manager role."""
         if not isinstance(interaction.user, discord.Member):
@@ -1916,15 +1929,20 @@ class ClubManagement(commands.Cog):
 
     @app_commands.command(name="franchiseconfig", description="Set the Discord role used for franchise owners")
     @app_commands.guild_only()
-    @owner_or_permissions(administrator=True)
     async def franchiseconfig(self, interaction: discord.Interaction, role: discord.Role):
+        if not await self.require_owner_control(interaction):
+            return
+        if role.is_default() or role.managed:
+            await interaction.response.send_message("Choose a normal assignable Discord role.", ephemeral=True)
+            return
         self.db.configure_franchise_role(interaction.guild_id, role.id)
-        await interaction.response.send_message(f"Franchise owner role set to {role.mention}.", ephemeral=True)
+        await interaction.response.send_message(f"Franchise Owner role set to {role.mention}.")
 
     @app_commands.command(name="appointfranchiseowner", description="Give a member the franchise owner role")
     @app_commands.guild_only()
-    @owner_or_permissions(administrator=True)
     async def appointfranchiseowner(self, interaction: discord.Interaction, member: discord.Member):
+        if not await self.require_owner_control(interaction):
+            return
         config = self.db.league_config(interaction.guild_id)
         role = interaction.guild.get_role(config["franchise_role_id"]) if config and config["franchise_role_id"] else None
         if role is None:
@@ -1935,7 +1953,44 @@ class ClubManagement(commands.Cog):
         except discord.Forbidden:
             await interaction.response.send_message("I cannot assign that role. Put my bot role above it.", ephemeral=True)
             return
-        await interaction.response.send_message(f"Appointed {member.mention} as a franchise owner.", ephemeral=True)
+        await interaction.response.send_message(f"Appointed {member.mention} as a Franchise Owner.")
+
+    @app_commands.command(name="removefranchiseowner", description="Remove the Franchise Owner role from a member")
+    @app_commands.guild_only()
+    async def removefranchiseowner(self, interaction: discord.Interaction, member: discord.Member):
+        if not await self.require_owner_control(interaction):
+            return
+        config = self.db.league_config(interaction.guild_id)
+        role = interaction.guild.get_role(config["franchise_role_id"]) if config and config["franchise_role_id"] else None
+        if role is None:
+            await interaction.response.send_message("Run /franchiseconfig first.", ephemeral=True)
+            return
+        if role not in member.roles:
+            await interaction.response.send_message(f"{member.mention} is not a Franchise Owner.", ephemeral=True)
+            return
+        try:
+            await member.remove_roles(role, reason=f"Removed by {interaction.user}")
+        except discord.Forbidden:
+            await interaction.response.send_message("I cannot remove that role. Put my bot role above it.", ephemeral=True)
+            return
+        await interaction.response.send_message(f"Removed {member.mention} as a Franchise Owner.")
+
+    @app_commands.command(name="franchiseowners", description="Show every current Franchise Owner")
+    @app_commands.guild_only()
+    async def franchiseowners(self, interaction: discord.Interaction):
+        config = self.db.league_config(interaction.guild_id)
+        role = interaction.guild.get_role(config["franchise_role_id"]) if config and config["franchise_role_id"] else None
+        if role is None:
+            await interaction.response.send_message("Run /franchiseconfig first.", ephemeral=True)
+            return
+        members = [member for member in role.members if not member.bot]
+        listing = "\n".join(f"- {member.mention} / **{member.name}**" for member in members)
+        embed = discord.Embed(
+            title="FRANCHISE OWNERS",
+            description=listing or "No members currently have the Franchise Owner role.",
+            color=role.color if role.color.value else discord.Color.blurple(),
+        )
+        await interaction.response.send_message(embed=embed)
 
     @app_commands.command(name="blacklist", description="Blacklist a player from club offers")
     @app_commands.guild_only()
@@ -2232,6 +2287,7 @@ class ClubManagement(commands.Cog):
             "**Budgets:** `/budgetsetup` `/setbudget` `/budgets`\n"
             "**League:** `/result` `/standings` `/endseason`\n"
             "**Teams:** `/addteam` `/editteam` `/removeteam` `/transferownership` `/teamoffers`\n"
+            "**Franchise Owners:** `/franchiseconfig` `/appointfranchiseowner` `/removefranchiseowner` `/franchiseowners`\n"
             "**Staff:** `/promote` `/demoteco` `/forcepromote` `/forcedemote` `/forcesign` `/forcerelease`\n"
             "**Safety:** `/blacklist` `/removeblacklist` `/blacklistlist` `/debug`\n"
             "**Community:** `/quicksetup` `/poll` `/pollconfig` `/ticketsetup` `/applicationsetup` `/rolesaversetup` `/welcomesetup` `/rulesembed`\n"
