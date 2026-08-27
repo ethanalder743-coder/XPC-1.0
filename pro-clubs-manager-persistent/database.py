@@ -169,6 +169,20 @@ class Database:
                     closed_at TEXT
                 );
 
+                CREATE TABLE IF NOT EXISTS role_saver_config (
+                    guild_id INTEGER PRIMARY KEY,
+                    log_channel_id INTEGER NOT NULL,
+                    role_ids TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS saved_member_roles (
+                    guild_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    role_ids TEXT NOT NULL,
+                    saved_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (guild_id, user_id)
+                );
+
                 CREATE TABLE IF NOT EXISTS league_config (
                     guild_id INTEGER PRIMARY KEY,
                     franchise_role_id INTEGER,
@@ -257,6 +271,11 @@ class Database:
             ):
                 if column not in team_columns:
                     db.execute(f"ALTER TABLE teams ADD COLUMN {column} {kind}")
+
+            application_columns = {row["name"] for row in db.execute("PRAGMA table_info(staff_applications)")}
+            for column, kind in (("application_type", "TEXT NOT NULL DEFAULT 'Staff'"), ("answers", "TEXT")):
+                if column not in application_columns:
+                    db.execute(f"ALTER TABLE staff_applications ADD COLUMN {column} {kind}")
 
             budget_columns = {row["name"] for row in db.execute("PRAGMA table_info(budget_config)")}
             if "starting_budget" not in budget_columns:
@@ -778,12 +797,38 @@ class Database:
 
     def create_staff_application(
         self, channel_id: int, guild_id: int, user_id: int, position: str,
+        application_type: str = "Staff", answers: str | None = None,
     ) -> None:
         with self.connect() as db:
             db.execute(
-                "INSERT INTO staff_applications (channel_id, guild_id, user_id, position) VALUES (?, ?, ?, ?)",
-                (channel_id, guild_id, user_id, position),
+                "INSERT INTO staff_applications (channel_id, guild_id, user_id, position, application_type, answers) VALUES (?, ?, ?, ?, ?, ?)",
+                (channel_id, guild_id, user_id, position, application_type, answers),
             )
+
+    def configure_role_saver(self, guild_id: int, log_channel_id: int, role_ids: list[int]) -> None:
+        with self.connect() as db:
+            db.execute(
+                """INSERT INTO role_saver_config (guild_id, log_channel_id, role_ids) VALUES (?, ?, ?)
+                ON CONFLICT(guild_id) DO UPDATE SET log_channel_id=excluded.log_channel_id, role_ids=excluded.role_ids""",
+                (guild_id, log_channel_id, ",".join(str(role_id) for role_id in role_ids)),
+            )
+
+    def role_saver_config(self, guild_id: int) -> sqlite3.Row | None:
+        with self.connect() as db:
+            return db.execute("SELECT * FROM role_saver_config WHERE guild_id = ?", (guild_id,)).fetchone()
+
+    def save_member_roles(self, guild_id: int, user_id: int, role_ids: list[int]) -> None:
+        with self.connect() as db:
+            db.execute(
+                """INSERT INTO saved_member_roles (guild_id, user_id, role_ids) VALUES (?, ?, ?)
+                ON CONFLICT(guild_id, user_id) DO UPDATE SET role_ids=excluded.role_ids, saved_at=CURRENT_TIMESTAMP""",
+                (guild_id, user_id, ",".join(str(role_id) for role_id in role_ids)),
+            )
+
+    def saved_member_roles(self, guild_id: int, user_id: int) -> list[int]:
+        with self.connect() as db:
+            row = db.execute("SELECT role_ids FROM saved_member_roles WHERE guild_id = ? AND user_id = ?", (guild_id, user_id)).fetchone()
+        return [int(value) for value in row["role_ids"].split(",") if value] if row and row["role_ids"] else []
 
     def staff_application(self, channel_id: int) -> sqlite3.Row | None:
         with self.connect() as db:
