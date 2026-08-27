@@ -703,6 +703,14 @@ class Database:
                 )
             )
 
+    def clear_totw_test_submissions(self, guild_id: int, week: int) -> int:
+        with self.connect() as db:
+            cursor = db.execute(
+                "DELETE FROM totw_submissions WHERE guild_id = ? AND week = ? AND user_id < 0",
+                (guild_id, week),
+            )
+            return cursor.rowcount
+
     def configure_budget_channel(self, guild_id: int, channel_id: int, starting_budget: int) -> None:
         with self.connect() as db:
             db.execute(
