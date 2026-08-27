@@ -17,6 +17,25 @@ from database import Database
 from stats_ocr import extract_rating
 
 
+def owner_or_permissions(**required_permissions):
+    """Allow the Discord application owner or members with the requested permissions."""
+    async def predicate(interaction: discord.Interaction) -> bool:
+        if await interaction.client.is_owner(interaction.user):
+            return True
+        member = interaction.user
+        if not isinstance(member, discord.Member):
+            raise app_commands.MissingPermissions(list(required_permissions))
+        missing = [
+            name for name, expected in required_permissions.items()
+            if getattr(member.guild_permissions, name, None) != expected
+        ]
+        if missing:
+            raise app_commands.MissingPermissions(missing)
+        return True
+
+    return app_commands.check(predicate)
+
+
 def get_player_roster(database: Database, guild: discord.Guild, role: discord.Role, team_name: str):
     """Return only players recorded after accepting an offer."""
     members = []
@@ -953,11 +972,14 @@ class ClubManagement(commands.Cog):
             self.db.set_budget_message(guild.id, message.id)
         return message
 
+    async def is_global_owner(self, interaction: discord.Interaction) -> bool:
+        return await self.bot.is_owner(interaction.user)
+
     async def require_manager(self, interaction: discord.Interaction) -> bool:
         """Allow administrators or members with either configured manager role."""
         if not isinstance(interaction.user, discord.Member):
             return False
-        if interaction.user.guild_permissions.administrator:
+        if await self.is_global_owner(interaction) or interaction.user.guild_permissions.administrator:
             return True
         config = self.db.config(interaction.guild_id)
         allowed = {
@@ -975,7 +997,7 @@ class ClubManagement(commands.Cog):
     async def require_force_access(self, interaction: discord.Interaction) -> bool:
         if not isinstance(interaction.user, discord.Member):
             return False
-        if interaction.user.guild_permissions.administrator:
+        if await self.is_global_owner(interaction) or interaction.user.guild_permissions.administrator:
             return True
         allowed = self.db.force_role_ids(interaction.guild_id)
         if any(role.id in allowed for role in interaction.user.roles):
@@ -989,7 +1011,7 @@ class ClubManagement(commands.Cog):
     async def require_franchise_owner(self, interaction: discord.Interaction) -> bool:
         if not isinstance(interaction.user, discord.Member):
             return False
-        if interaction.user.guild_permissions.administrator:
+        if await self.is_global_owner(interaction) or interaction.user.guild_permissions.administrator:
             return True
         config = self.db.league_config(interaction.guild_id)
         if config and config["franchise_role_id"] and any(
@@ -1005,6 +1027,8 @@ class ClubManagement(commands.Cog):
         """Allow only the server owner and the configured franchise-owner role."""
         if not isinstance(interaction.user, discord.Member) or interaction.guild is None:
             return False
+        if await self.is_global_owner(interaction):
+            return True
         if interaction.user.id == interaction.guild.owner_id:
             return True
         config = self.db.league_config(interaction.guild_id)
@@ -1055,6 +1079,16 @@ class ClubManagement(commands.Cog):
         await interaction.response.send_message(message, ephemeral=True)
         return None
 
+    async def command_team(self, interaction: discord.Interaction, team: str | None = None):
+        """Use a manager's own team, or let the application owner select any team."""
+        if team and await self.is_global_owner(interaction):
+            record = self.db.team(interaction.guild_id, team)
+            if record:
+                return record
+            await interaction.response.send_message("That team is not configured.", ephemeral=True)
+            return None
+        return await self.manager_team(interaction)
+
     async def create_logo_emoji(
         self, guild: discord.Guild, team_name: str, logo: discord.Attachment
     ) -> discord.Emoji | None:
@@ -1088,7 +1122,10 @@ class ClubManagement(commands.Cog):
 
     @app_commands.command(name="offer", description="Offer a player a place on your team")
     @app_commands.guild_only()
-    async def offer(self, interaction: discord.Interaction, player: discord.Member):
+    @app_commands.autocomplete(team=team_autocomplete)
+    async def offer(
+        self, interaction: discord.Interaction, player: discord.Member, team: str | None = None
+    ):
         if not await self.require_manager(interaction):
             return
         if not self.db.transfer_window_open(interaction.guild_id):
@@ -1101,7 +1138,7 @@ class ClubManagement(commands.Cog):
             )
             return
         assert interaction.guild and interaction.channel
-        record = await self.manager_team(interaction)
+        record = await self.command_team(interaction, team)
         if not record:
             return
         role = interaction.guild.get_role(record["role_id"])
@@ -1156,15 +1193,17 @@ class ClubManagement(commands.Cog):
 
     @app_commands.command(name="release", description="Release a player from your team")
     @app_commands.guild_only()
+    @app_commands.autocomplete(team=team_autocomplete)
     async def release(
         self,
         interaction: discord.Interaction,
         player: discord.Member,
+        team: str | None = None,
     ):
         if not await self.require_manager(interaction):
             return
         assert interaction.guild
-        record = await self.manager_team(interaction)
+        record = await self.command_team(interaction, team)
         if not record:
             return
         role = interaction.guild.get_role(record["role_id"]) if record else None
@@ -1225,7 +1264,7 @@ class ClubManagement(commands.Cog):
 
     @app_commands.command(name="forceconfig", description="Set roles allowed to force sign and release")
     @app_commands.guild_only()
-    @app_commands.checks.has_permissions(administrator=True)
+    @owner_or_permissions(administrator=True)
     async def forceconfig(
         self,
         interaction: discord.Interaction,
@@ -1352,11 +1391,12 @@ class ClubManagement(commands.Cog):
 
     @app_commands.command(name="roster", description="View your team's signed roster")
     @app_commands.guild_only()
-    async def roster(self, interaction: discord.Interaction):
+    @app_commands.autocomplete(team=team_autocomplete)
+    async def roster(self, interaction: discord.Interaction, team: str | None = None):
         if not await self.require_manager(interaction):
             return
         assert interaction.guild
-        record = await self.manager_team(interaction)
+        record = await self.command_team(interaction, team)
         if not record:
             return
         role = interaction.guild.get_role(record["role_id"])
@@ -1432,7 +1472,7 @@ class ClubManagement(commands.Cog):
 
     @app_commands.command(name="totwsetweek", description="Set the active Team of the Week number")
     @app_commands.guild_only()
-    @app_commands.checks.has_permissions(administrator=True)
+    @owner_or_permissions(administrator=True)
     async def totwsetweek(
         self, interaction: discord.Interaction, week: app_commands.Range[int, 1, 999]
     ):
@@ -1533,9 +1573,9 @@ class ClubManagement(commands.Cog):
             return
         config = self.db.league_config(interaction.guild_id)
         franchise_role_id = config["franchise_role_id"] if config else None
-        if not franchise_role_id or not any(
+        if not await self.is_global_owner(interaction) and (not franchise_role_id or not any(
             role.id == franchise_role_id for role in interaction.user.roles
-        ):
+        )):
             await interaction.response.send_message(
                 "Only members with the configured Franchise Owner role can view stat uploads.",
                 ephemeral=True,
@@ -1633,7 +1673,7 @@ class ClubManagement(commands.Cog):
 
     @app_commands.command(name="budgetsetup", description="Set the channel for the live team budget list")
     @app_commands.guild_only()
-    @app_commands.checks.has_permissions(administrator=True)
+    @owner_or_permissions(administrator=True)
     async def budgetsetup(
         self, interaction: discord.Interaction, channel: discord.TextChannel,
         starting_budget: app_commands.Range[int, 0, 1000000],
@@ -1649,7 +1689,7 @@ class ClubManagement(commands.Cog):
 
     @app_commands.command(name="setbudget", description="Set a configured team's budget in millions")
     @app_commands.guild_only()
-    @app_commands.checks.has_permissions(administrator=True)
+    @owner_or_permissions(administrator=True)
     @app_commands.autocomplete(team=team_autocomplete)
     async def setbudget(
         self, interaction: discord.Interaction, team: str,
@@ -1670,7 +1710,7 @@ class ClubManagement(commands.Cog):
 
     @app_commands.command(name="budgets", description="Refresh the live team budget message")
     @app_commands.guild_only()
-    @app_commands.checks.has_permissions(administrator=True)
+    @owner_or_permissions(administrator=True)
     async def budgets(self, interaction: discord.Interaction):
         assert interaction.guild
         await interaction.response.defer(ephemeral=True)
@@ -1820,7 +1860,7 @@ class ClubManagement(commands.Cog):
 
     @app_commands.command(name="pollconfig", description="Set the role pinged for custom polls")
     @app_commands.guild_only()
-    @app_commands.checks.has_permissions(administrator=True)
+    @owner_or_permissions(administrator=True)
     async def pollconfig(self, interaction: discord.Interaction, ping_role: discord.Role):
         self.db.configure_poll_role(interaction.guild_id, ping_role.id)
         await interaction.response.send_message(
@@ -1876,14 +1916,14 @@ class ClubManagement(commands.Cog):
 
     @app_commands.command(name="franchiseconfig", description="Set the Discord role used for franchise owners")
     @app_commands.guild_only()
-    @app_commands.checks.has_permissions(administrator=True)
+    @owner_or_permissions(administrator=True)
     async def franchiseconfig(self, interaction: discord.Interaction, role: discord.Role):
         self.db.configure_franchise_role(interaction.guild_id, role.id)
         await interaction.response.send_message(f"Franchise owner role set to {role.mention}.", ephemeral=True)
 
     @app_commands.command(name="appointfranchiseowner", description="Give a member the franchise owner role")
     @app_commands.guild_only()
-    @app_commands.checks.has_permissions(administrator=True)
+    @owner_or_permissions(administrator=True)
     async def appointfranchiseowner(self, interaction: discord.Interaction, member: discord.Member):
         config = self.db.league_config(interaction.guild_id)
         role = interaction.guild.get_role(config["franchise_role_id"]) if config and config["franchise_role_id"] else None
@@ -1952,7 +1992,7 @@ class ClubManagement(commands.Cog):
         is_franchise = isinstance(interaction.user, discord.Member) and config and config["franchise_role_id"] and any(
             role.id == config["franchise_role_id"] for role in interaction.user.roles
         )
-        if offer["offered_by"] != interaction.user.id and not interaction.user.guild_permissions.administrator and not is_franchise:
+        if offer["offered_by"] != interaction.user.id and not await self.is_global_owner(interaction) and not interaction.user.guild_permissions.administrator and not is_franchise:
             await interaction.response.send_message("You cannot cancel that offer.", ephemeral=True)
             return
         self.db.cancel_offer(offer_id, interaction.guild_id)
@@ -2158,7 +2198,7 @@ class ClubManagement(commands.Cog):
 
     @app_commands.command(name="debug", description="Check the bot configuration and permissions")
     @app_commands.guild_only()
-    @app_commands.checks.has_permissions(administrator=True)
+    @owner_or_permissions(administrator=True)
     async def debug(self, interaction: discord.Interaction):
         config = self.db.config(interaction.guild_id)
         league = self.db.league_config(interaction.guild_id)
@@ -2173,7 +2213,7 @@ class ClubManagement(commands.Cog):
 
     @app_commands.command(name="endseason", description="Reset all season activity while keeping configured teams")
     @app_commands.guild_only()
-    @app_commands.checks.has_permissions(administrator=True)
+    @owner_or_permissions(administrator=True)
     async def endseason(self, interaction: discord.Interaction, confirm: bool):
         if not confirm:
             await interaction.response.send_message("Nothing was reset. Set confirm to True to end the season.", ephemeral=True)
@@ -2207,7 +2247,7 @@ class ClubManagement(commands.Cog):
 
     @app_commands.command(name="addteam", description="Create a new team (Administrator only)")
     @app_commands.guild_only()
-    @app_commands.checks.has_permissions(administrator=True)
+    @owner_or_permissions(administrator=True)
     async def addteam(
         self,
         interaction: discord.Interaction,
@@ -2268,7 +2308,7 @@ class ClubManagement(commands.Cog):
 
     @app_commands.command(name="setteamlogo", description="Update a team's corner and inline logo")
     @app_commands.guild_only()
-    @app_commands.checks.has_permissions(administrator=True)
+    @owner_or_permissions(administrator=True)
     @app_commands.autocomplete(team=team_autocomplete)
     async def setteamlogo(
         self,
@@ -2297,7 +2337,7 @@ class ClubManagement(commands.Cog):
 
     @app_commands.command(name="removeteam", description="Remove a configured team (Administrator only)")
     @app_commands.guild_only()
-    @app_commands.checks.has_permissions(administrator=True)
+    @owner_or_permissions(administrator=True)
     @app_commands.autocomplete(name=team_autocomplete)
     async def removeteam(self, interaction: discord.Interaction, name: str):
         removed = self.db.remove_team(interaction.guild_id, name)
@@ -2305,7 +2345,7 @@ class ClubManagement(commands.Cog):
         await interaction.response.send_message(text, ephemeral=True)
 
     @team_group.command(name="add", description="Connect a team name to a Discord role")
-    @app_commands.checks.has_permissions(administrator=True)
+    @owner_or_permissions(administrator=True)
     async def team_add(self, interaction: discord.Interaction, name: str, role: discord.Role):
         if role.is_default() or role.managed:
             await interaction.response.send_message("Choose a normal assignable role.", ephemeral=True)
@@ -2318,7 +2358,7 @@ class ClubManagement(commands.Cog):
         await interaction.response.send_message(f"Added **{name.strip()}** using {role.mention}.")
 
     @team_group.command(name="remove", description="Remove a configured team")
-    @app_commands.checks.has_permissions(administrator=True)
+    @owner_or_permissions(administrator=True)
     @app_commands.autocomplete(name=team_autocomplete)
     async def team_remove(self, interaction: discord.Interaction, name: str):
         removed = self.db.remove_team(interaction.guild_id, name)
@@ -2333,7 +2373,7 @@ class ClubManagement(commands.Cog):
 
     @app_commands.command(name="config_setup", description="Set log channels and the two management roles")
     @app_commands.guild_only()
-    @app_commands.checks.has_permissions(administrator=True)
+    @owner_or_permissions(administrator=True)
     async def config_setup(
         self,
         interaction: discord.Interaction,
@@ -2360,7 +2400,7 @@ class ClubManagement(commands.Cog):
 
     @app_commands.command(name="quicksetup", description="Guided Yes/No setup using channel and role selectors")
     @app_commands.guild_only()
-    @app_commands.checks.has_permissions(administrator=True)
+    @owner_or_permissions(administrator=True)
     async def quicksetup(self, interaction: discord.Interaction):
         wizard = QuickSetupWizard(self, interaction.user.id, interaction.guild)
         await interaction.response.send_message(
@@ -2370,7 +2410,7 @@ class ClubManagement(commands.Cog):
 
     @app_commands.command(name="signingremoverole", description="Choose the role removed automatically when a player signs")
     @app_commands.guild_only()
-    @app_commands.checks.has_permissions(administrator=True)
+    @owner_or_permissions(administrator=True)
     async def signingremoverole(self, interaction: discord.Interaction, role: discord.Role):
         if role.is_default() or role.managed:
             await interaction.response.send_message("Choose a normal server role.", ephemeral=True)
@@ -2386,7 +2426,7 @@ class ClubManagement(commands.Cog):
 
     @app_commands.command(name="rulesembed", description="Post rules cards in a selected channel")
     @app_commands.guild_only()
-    @app_commands.checks.has_permissions(administrator=True)
+    @owner_or_permissions(administrator=True)
     @app_commands.describe(
         channel="Channel where the rules should be posted",
         rules_banner="Wide image displayed with the server rules",
@@ -2442,7 +2482,7 @@ class ClubManagement(commands.Cog):
 
     @app_commands.command(name="welcomesetup", description="Configure a custom welcome image")
     @app_commands.guild_only()
-    @app_commands.checks.has_permissions(administrator=True)
+    @owner_or_permissions(administrator=True)
     @app_commands.describe(
         channel="Channel where welcome cards are posted",
         banner="Your wide welcome background image",
@@ -2483,7 +2523,7 @@ class ClubManagement(commands.Cog):
 
     @app_commands.command(name="welcometest", description="Test the configured welcome card")
     @app_commands.guild_only()
-    @app_commands.checks.has_permissions(administrator=True)
+    @owner_or_permissions(administrator=True)
     async def welcometest(self, interaction: discord.Interaction):
         assert interaction.guild and isinstance(interaction.user, discord.Member)
         config = self.db.welcome_config(interaction.guild.id)
@@ -2507,14 +2547,14 @@ class ClubManagement(commands.Cog):
 
     @app_commands.command(name="moderationsetup", description="Set moderation logs and automatic scam protection")
     @app_commands.guild_only()
-    @app_commands.checks.has_permissions(administrator=True)
+    @owner_or_permissions(administrator=True)
     async def moderationsetup(self, interaction: discord.Interaction, log_channel: discord.TextChannel, scam_protection: bool = True):
         self.db.configure_moderation(interaction.guild_id, log_channel.id, scam_protection)
         await interaction.response.send_message(f"Moderation logs set to {log_channel.mention}. Image-money scam protection is **{'ON' if scam_protection else 'OFF'}**.", ephemeral=True)
 
     @app_commands.command(name="warn", description="Warn a server member")
     @app_commands.guild_only()
-    @app_commands.checks.has_permissions(moderate_members=True)
+    @owner_or_permissions(moderate_members=True)
     async def warn(self, interaction: discord.Interaction, member: discord.Member, reason: str):
         warning_id = self.db.add_warning(interaction.guild_id, member.id, interaction.user.id, reason)
         try: await member.send(f"You were warned in **{interaction.guild.name}**.\nReason: {reason}")
@@ -2524,7 +2564,7 @@ class ClubManagement(commands.Cog):
 
     @app_commands.command(name="warnings", description="View a member's warnings")
     @app_commands.guild_only()
-    @app_commands.checks.has_permissions(moderate_members=True)
+    @owner_or_permissions(moderate_members=True)
     async def warnings(self, interaction: discord.Interaction, member: discord.Member):
         rows = self.db.warnings_for(interaction.guild_id, member.id)
         lines = [f"`#{row['id']}` {row['reason']} — <@{row['moderator_id']}>" for row in rows[:20]] or ["No warnings."]
@@ -2532,9 +2572,9 @@ class ClubManagement(commands.Cog):
 
     @app_commands.command(name="kick", description="Kick a member from the server")
     @app_commands.guild_only()
-    @app_commands.checks.has_permissions(kick_members=True)
+    @owner_or_permissions(kick_members=True)
     async def kick_member(self, interaction: discord.Interaction, member: discord.Member, reason: str = "No reason provided"):
-        if member.top_role >= interaction.user.top_role and interaction.guild.owner_id != interaction.user.id:
+        if not await self.is_global_owner(interaction) and member.top_role >= interaction.user.top_role and interaction.guild.owner_id != interaction.user.id:
             await interaction.response.send_message("You cannot kick someone with an equal or higher role.", ephemeral=True); return
         await member.kick(reason=f"{reason} — {interaction.user}")
         await interaction.response.send_message(f"Kicked **{member}**.", ephemeral=True)
@@ -2542,9 +2582,9 @@ class ClubManagement(commands.Cog):
 
     @app_commands.command(name="ban", description="Ban a member from the server")
     @app_commands.guild_only()
-    @app_commands.checks.has_permissions(ban_members=True)
+    @owner_or_permissions(ban_members=True)
     async def ban_member(self, interaction: discord.Interaction, member: discord.Member, reason: str = "No reason provided"):
-        if member.top_role >= interaction.user.top_role and interaction.guild.owner_id != interaction.user.id:
+        if not await self.is_global_owner(interaction) and member.top_role >= interaction.user.top_role and interaction.guild.owner_id != interaction.user.id:
             await interaction.response.send_message("You cannot ban someone with an equal or higher role.", ephemeral=True); return
         await member.ban(reason=f"{reason} — {interaction.user}", delete_message_seconds=86400)
         await interaction.response.send_message(f"Banned **{member}**.", ephemeral=True)
@@ -2552,7 +2592,7 @@ class ClubManagement(commands.Cog):
 
     @app_commands.command(name="timeout", description="Temporarily timeout a member")
     @app_commands.guild_only()
-    @app_commands.checks.has_permissions(moderate_members=True)
+    @owner_or_permissions(moderate_members=True)
     async def timeout_member(self, interaction: discord.Interaction, member: discord.Member, minutes: app_commands.Range[int, 1, 40320], reason: str = "No reason provided"):
         await member.timeout(timedelta(minutes=minutes), reason=f"{reason} — {interaction.user}")
         await interaction.response.send_message(f"Timed out {member.mention} for **{minutes} minutes**.", ephemeral=True)
@@ -2560,7 +2600,7 @@ class ClubManagement(commands.Cog):
 
     @app_commands.command(name="purge", description="Delete multiple messages from the current channel")
     @app_commands.guild_only()
-    @app_commands.checks.has_permissions(manage_messages=True)
+    @owner_or_permissions(manage_messages=True)
     async def purge(self, interaction: discord.Interaction, amount: app_commands.Range[int, 1, 100]):
         if not isinstance(interaction.channel, discord.TextChannel): return
         await interaction.response.defer(ephemeral=True)
@@ -2570,7 +2610,7 @@ class ClubManagement(commands.Cog):
 
     @app_commands.command(name="channelbackup", description="Save a text channel and all of its permissions")
     @app_commands.guild_only()
-    @app_commands.checks.has_permissions(administrator=True)
+    @owner_or_permissions(administrator=True)
     async def channelbackup(self, interaction: discord.Interaction, channel: discord.TextChannel):
         overwrites = []
         for target, overwrite in channel.overwrites.items():
@@ -2581,7 +2621,7 @@ class ClubManagement(commands.Cog):
 
     @app_commands.command(name="channelbackups", description="List restorable channel backups")
     @app_commands.guild_only()
-    @app_commands.checks.has_permissions(administrator=True)
+    @owner_or_permissions(administrator=True)
     async def channelbackups(self, interaction: discord.Interaction):
         rows = self.db.channel_backups(interaction.guild_id)
         lines = [f"`{row['id']}` — **#{row['name']}** — {row['backed_up_at']}" for row in rows[:25]] or ["No channel backups saved."]
@@ -2589,7 +2629,7 @@ class ClubManagement(commands.Cog):
 
     @app_commands.command(name="restorechannel", description="Recreate a deleted channel from a backup ID")
     @app_commands.guild_only()
-    @app_commands.checks.has_permissions(administrator=True)
+    @owner_or_permissions(administrator=True)
     async def restorechannel(self, interaction: discord.Interaction, backup_id: int):
         backup = self.db.channel_backup(interaction.guild_id, backup_id)
         if not backup:
@@ -2615,7 +2655,7 @@ class ClubManagement(commands.Cog):
 
     @app_commands.command(name="applicationsetup", description="Create the Staff and Manager Applications panel")
     @app_commands.guild_only()
-    @app_commands.checks.has_permissions(administrator=True)
+    @owner_or_permissions(administrator=True)
     @app_commands.describe(
         panel_channel="Channel where members open applications",
         application_category="Category where private applications are created",
@@ -2670,7 +2710,7 @@ class ClubManagement(commands.Cog):
 
     @app_commands.command(name="rolesaversetup", description="Choose roles saved when members leave and set the log channel")
     @app_commands.guild_only()
-    @app_commands.checks.has_permissions(administrator=True)
+    @owner_or_permissions(administrator=True)
     async def rolesaversetup(
         self, interaction: discord.Interaction, log_channel: discord.TextChannel,
         role_1: discord.Role, role_2: discord.Role | None = None,
@@ -2686,7 +2726,7 @@ class ClubManagement(commands.Cog):
 
     @app_commands.command(name="ticketsetup", description="Create and configure the support ticket panel")
     @app_commands.guild_only()
-    @app_commands.checks.has_permissions(administrator=True)
+    @owner_or_permissions(administrator=True)
     @app_commands.describe(
         panel_channel="Channel where users open tickets",
         ticket_category="Category where private ticket channels are created",
