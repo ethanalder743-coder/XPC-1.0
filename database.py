@@ -195,6 +195,11 @@ class Database:
                     scam_protection INTEGER NOT NULL DEFAULT 1
                 );
 
+                CREATE TABLE IF NOT EXISTS bot_log_config (
+                    guild_id INTEGER PRIMARY KEY,
+                    channel_id INTEGER NOT NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS warnings (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     guild_id INTEGER NOT NULL,
@@ -948,6 +953,26 @@ class Database:
     def moderation_config(self, guild_id: int) -> sqlite3.Row | None:
         with self.connect() as db:
             return db.execute("SELECT * FROM moderation_config WHERE guild_id = ?", (guild_id,)).fetchone()
+
+    def configure_bot_log(self, guild_id: int, channel_id: int) -> None:
+        with self.connect() as db:
+            db.execute(
+                """INSERT INTO bot_log_config (guild_id, channel_id) VALUES (?, ?)
+                ON CONFLICT(guild_id) DO UPDATE SET channel_id=excluded.channel_id""",
+                (guild_id, channel_id),
+            )
+
+    def bot_log_config(self, guild_id: int) -> sqlite3.Row | None:
+        with self.connect() as db:
+            return db.execute(
+                "SELECT * FROM bot_log_config WHERE guild_id = ?", (guild_id,)
+            ).fetchone()
+
+    def disable_bot_log(self, guild_id: int) -> bool:
+        with self.connect() as db:
+            return db.execute(
+                "DELETE FROM bot_log_config WHERE guild_id = ?", (guild_id,)
+            ).rowcount > 0
 
     def add_warning(self, guild_id: int, user_id: int, moderator_id: int, reason: str) -> int:
         with self.connect() as db:
