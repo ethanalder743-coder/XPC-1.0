@@ -93,7 +93,8 @@ class Database:
 
                 CREATE TABLE IF NOT EXISTS totw_config (
                     guild_id INTEGER PRIMARY KEY,
-                    active_week INTEGER NOT NULL DEFAULT 1
+                    active_week INTEGER NOT NULL DEFAULT 1,
+                    channel_id INTEGER
                 );
 
                 CREATE TABLE IF NOT EXISTS totw_submissions (
@@ -109,6 +110,8 @@ class Database:
                     summary_url TEXT,
                     stats_url TEXT,
                     defending_url TEXT,
+                    archive_channel_id INTEGER,
+                    archive_message_id INTEGER,
                     submitted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     PRIMARY KEY (guild_id, week, user_id)
                 );
@@ -391,10 +394,20 @@ class Database:
                 db.execute("ALTER TABLE budget_config ADD COLUMN starting_budget INTEGER NOT NULL DEFAULT 0")
 
             totw_columns = {row["name"] for row in db.execute("PRAGMA table_info(totw_submissions)")}
-            for column in ("summary_url", "stats_url", "defending_url"):
+            for column, kind in (
+                ("summary_url", "TEXT"),
+                ("stats_url", "TEXT"),
+                ("defending_url", "TEXT"),
+                ("archive_channel_id", "INTEGER"),
+                ("archive_message_id", "INTEGER"),
+            ):
                 if column not in totw_columns:
-                    db.execute(f"ALTER TABLE totw_submissions ADD COLUMN {column} TEXT")
+                    db.execute(f"ALTER TABLE totw_submissions ADD COLUMN {column} {kind}")
             db.execute("DELETE FROM totw_submissions WHERE user_id < 0")
+
+            totw_config_columns = {row["name"] for row in db.execute("PRAGMA table_info(totw_config)")}
+            if "channel_id" not in totw_config_columns:
+                db.execute("ALTER TABLE totw_config ADD COLUMN channel_id INTEGER")
 
             result_columns = {row["name"] for row in db.execute("PRAGMA table_info(match_results)")}
             for column in ("source_channel_id", "source_message_id"):
@@ -702,6 +715,20 @@ class Database:
                 (guild_id, week),
             )
 
+    def set_totw_channel(self, guild_id: int, channel_id: int) -> None:
+        with self.connect() as db:
+            db.execute(
+                """INSERT INTO totw_config (guild_id, channel_id) VALUES (?, ?)
+                ON CONFLICT(guild_id) DO UPDATE SET channel_id = excluded.channel_id""",
+                (guild_id, channel_id),
+            )
+
+    def totw_config(self, guild_id: int) -> sqlite3.Row | None:
+        with self.connect() as db:
+            return db.execute(
+                "SELECT * FROM totw_config WHERE guild_id = ?", (guild_id,)
+            ).fetchone()
+
     def totw_week(self, guild_id: int) -> int:
         with self.connect() as db:
             row = db.execute(
@@ -723,6 +750,8 @@ class Database:
         summary_url: str | None = None,
         stats_url: str | None = None,
         defending_url: str | None = None,
+        archive_channel_id: int | None = None,
+        archive_message_id: int | None = None,
     ) -> None:
         with self.connect() as db:
             db.execute(
@@ -730,8 +759,9 @@ class Database:
                 INSERT INTO totw_submissions
                     (guild_id, week, user_id, team_name, position_group,
                     summary_rating, primary_rating, defending_rating, score,
-                    summary_url, stats_url, defending_url)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    summary_url, stats_url, defending_url,
+                    archive_channel_id, archive_message_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(guild_id, week, user_id) DO UPDATE SET
                     team_name = excluded.team_name,
                     position_group = excluded.position_group,
@@ -742,14 +772,25 @@ class Database:
                     summary_url = excluded.summary_url,
                     stats_url = excluded.stats_url,
                     defending_url = excluded.defending_url,
+                    archive_channel_id = excluded.archive_channel_id,
+                    archive_message_id = excluded.archive_message_id,
                     submitted_at = CURRENT_TIMESTAMP
                 """,
                 (
                     guild_id, week, user_id, team_name, position_group,
                     summary_rating, primary_rating, defending_rating, score,
                     summary_url, stats_url, defending_url,
+                    archive_channel_id, archive_message_id,
                 ),
             )
+
+    def totw_submission(self, guild_id: int, week: int, user_id: int) -> sqlite3.Row | None:
+        with self.connect() as db:
+            return db.execute(
+                """SELECT * FROM totw_submissions
+                WHERE guild_id = ? AND week = ? AND user_id = ?""",
+                (guild_id, week, user_id),
+            ).fetchone()
 
     def totw_submissions(self, guild_id: int, week: int) -> list[sqlite3.Row]:
         with self.connect() as db:
