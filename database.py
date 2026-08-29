@@ -290,7 +290,15 @@ class Database:
                     home_score INTEGER NOT NULL,
                     away_score INTEGER NOT NULL,
                     submitted_by INTEGER NOT NULL,
+                    source_channel_id INTEGER,
+                    source_message_id INTEGER,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE TABLE IF NOT EXISTS result_import_config (
+                    guild_id INTEGER PRIMARY KEY,
+                    channel_id INTEGER NOT NULL,
+                    import_after TEXT
                 );
 
                 CREATE TABLE IF NOT EXISTS standings_adjustments (
@@ -387,6 +395,16 @@ class Database:
                 if column not in totw_columns:
                     db.execute(f"ALTER TABLE totw_submissions ADD COLUMN {column} TEXT")
             db.execute("DELETE FROM totw_submissions WHERE user_id < 0")
+
+            result_columns = {row["name"] for row in db.execute("PRAGMA table_info(match_results)")}
+            for column in ("source_channel_id", "source_message_id"):
+                if column not in result_columns:
+                    db.execute(f"ALTER TABLE match_results ADD COLUMN {column} INTEGER")
+            db.execute(
+                """CREATE UNIQUE INDEX IF NOT EXISTS idx_match_results_source_message
+                ON match_results (guild_id, source_message_id)
+                WHERE source_message_id IS NOT NULL"""
+            )
 
             db.execute(
                 """
@@ -1212,6 +1230,89 @@ class Database:
                 (guild_id, home_team, away_team, home_score, away_score, submitted_by),
             )
 
+    def configure_result_import(self, guild_id: int, channel_id: int) -> None:
+        with self.connect() as db:
+            db.execute(
+                """INSERT INTO result_import_config (guild_id, channel_id, import_after)
+                VALUES (?, ?, NULL)
+                ON CONFLICT(guild_id) DO UPDATE SET
+                    channel_id = excluded.channel_id,
+                    import_after = NULL""",
+                (guild_id, channel_id),
+            )
+
+    def result_import_config(self, guild_id: int) -> sqlite3.Row | None:
+        with self.connect() as db:
+            return db.execute(
+                "SELECT * FROM result_import_config WHERE guild_id = ?", (guild_id,)
+            ).fetchone()
+
+    def imported_result(self, guild_id: int, message_id: int) -> sqlite3.Row | None:
+        with self.connect() as db:
+            return db.execute(
+                """SELECT * FROM match_results
+                WHERE guild_id = ? AND source_message_id = ?""",
+                (guild_id, message_id),
+            ).fetchone()
+
+    def upsert_imported_result(
+        self,
+        guild_id: int,
+        home_team: str,
+        away_team: str,
+        home_score: int,
+        away_score: int,
+        submitted_by: int,
+        source_channel_id: int,
+        source_message_id: int,
+        created_at: str,
+    ) -> str:
+        """Insert or refresh a result linked to a Discord message."""
+        with self.connect() as db:
+            existing = db.execute(
+                """SELECT * FROM match_results
+                WHERE guild_id = ? AND source_message_id = ?""",
+                (guild_id, source_message_id),
+            ).fetchone()
+            values = (home_team, away_team, home_score, away_score)
+            if existing:
+                current = (
+                    existing["home_team"], existing["away_team"],
+                    existing["home_score"], existing["away_score"],
+                )
+                if current == values and existing["source_channel_id"] == source_channel_id:
+                    return "unchanged"
+                db.execute(
+                    """UPDATE match_results SET
+                    home_team = ?, away_team = ?, home_score = ?, away_score = ?,
+                    submitted_by = ?, source_channel_id = ?
+                    WHERE guild_id = ? AND source_message_id = ?""",
+                    (
+                        home_team, away_team, home_score, away_score, submitted_by,
+                        source_channel_id, guild_id, source_message_id,
+                    ),
+                )
+                return "updated"
+            db.execute(
+                """INSERT INTO match_results
+                (guild_id, home_team, away_team, home_score, away_score, submitted_by,
+                 source_channel_id, source_message_id, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    guild_id, home_team, away_team, home_score, away_score,
+                    submitted_by, source_channel_id, source_message_id, created_at,
+                ),
+            )
+            return "added"
+
+    def delete_imported_result(self, guild_id: int, message_id: int) -> bool:
+        with self.connect() as db:
+            return db.execute(
+                """DELETE FROM match_results
+                WHERE guild_id = ? AND source_message_id = ?""",
+                (guild_id, message_id),
+            ).rowcount > 0
+
     def results(self, guild_id: int) -> list[sqlite3.Row]:
         with self.connect() as db:
             return list(db.execute("SELECT * FROM match_results WHERE guild_id = ? ORDER BY created_at", (guild_id,)))
@@ -1290,6 +1391,11 @@ class Database:
         with self.connect() as db:
             for table in ("match_results", "standings_adjustments", "offers", "transfers", "loans", "team_members", "totw_submissions"):
                 db.execute(f"DELETE FROM {table} WHERE guild_id = ?", (guild_id,))
+            db.execute(
+                """UPDATE result_import_config SET import_after = CURRENT_TIMESTAMP
+                WHERE guild_id = ?""",
+                (guild_id,),
+            )
             config = db.execute("SELECT starting_budget FROM budget_config WHERE guild_id = ?", (guild_id,)).fetchone()
             starting = int(config["starting_budget"]) if config else 0
             for team in db.execute("SELECT name FROM teams WHERE guild_id = ?", (guild_id,)):
