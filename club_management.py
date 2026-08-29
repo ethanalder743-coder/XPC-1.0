@@ -1860,13 +1860,14 @@ class ClubManagement(commands.Cog):
 
     @app_commands.command(name="totwsetweek", description="Set the active Team of the Week number")
     @app_commands.guild_only()
-    @owner_or_permissions(administrator=True)
     async def totwsetweek(
         self, interaction: discord.Interaction, week: app_commands.Range[int, 1, 999]
     ):
+        if not await self.require_franchise_owner(interaction):
+            return
         self.db.set_totw_week(interaction.guild_id, week)
         await interaction.response.send_message(
-            f"TOTW submissions are now open for week **{week}**.", ephemeral=True
+            f"TOTW submissions are now open for week **{week}**."
         )
 
     @app_commands.command(name="statschannel", description="Set the only channel where players can upload TOTW stats")
@@ -2998,28 +2999,96 @@ class ClubManagement(commands.Cog):
         await self.refresh_budget_message(interaction.guild)
         await interaction.followup.send("Season ended. Results, offers, loans, rosters and season data were reset.", ephemeral=True)
 
-    @app_commands.command(name="help", description="Show all XPC management commands")
+    @app_commands.command(name="help", description="Show the XPC commands available to you")
     @app_commands.guild_only()
     async def help_command(self, interaction: discord.Interaction):
-        text = (
-            "**Clubs:** `/offer` `/release` `/roster` `/allrosters` `/addtoroster` `/syncroster` `/myoffers` `/canceloffer` `/signingremoverole`\n"
-            "**Transfers:** `/transfer` `/loan` `/endloan` `/recallloan` `/loans` `/openwindow` `/closewindow`\n"
-            "**Budgets:** `/budgetsetup` `/setbudget` `/budgets`\n"
-            "**League:** `/resultchannel` `/importresults` `/result` `/results` `/updateresult` `/deleteresult` `/standings` `/updatetable` `/resettable` `/endseason`\n"
-            "**Teams:** `/addteam` `/editteam` `/removeteam` `/transferownership` `/teamoffers`\n"
-            "**Franchise Owners:** `/franchiseconfig` `/appointfranchiseowner` `/removefranchiseowner` `/franchiseowners`\n"
-            "**Staff:** `/promote` `/demoteco` `/forcepromote` `/forcedemote` `/forcesign` `/forcerelease`\n"
-            "**Safety:** `/blacklist` `/removeblacklist` `/blacklistlist` `/debug`\n"
-            "**Community:** `/quicksetup` `/botlogsetup` `/botlogdisable` `/poll` `/pollconfig` `/ticketsetup` `/applicationsetup` `/rolesaversetup` `/welcomesetup` `/rulesembed`\n"
-            "**Moderation:** `/moderationsetup` `/warn` `/warnings` `/kick` `/ban` `/timeout` `/purge`\n"
-            "**Safety & recovery:** `/channelbackup` `/channelbackups` `/restorechannel` `/invites`\n"
-            "**TOTW:** `/statschannel` `/uploadstats` `/statsuploads` `/totwlist` `/totwsetweek`"
+        assert interaction.guild and isinstance(interaction.user, discord.Member)
+        member = interaction.user
+        global_owner = await self.is_global_owner(interaction)
+        administrator = global_owner or member.guild_permissions.administrator
+        core = self.db.config(interaction.guild_id)
+        manager_ids = {
+            core["manager_role_1_id"], core["manager_role_2_id"]
+        } if core else set()
+        manager_access = administrator or any(role.id in manager_ids for role in member.roles)
+        league = self.db.league_config(interaction.guild_id)
+        franchise_access = administrator or bool(
+            league and league["franchise_role_id"]
+            and any(role.id == league["franchise_role_id"] for role in member.roles)
         )
-        embed = discord.Embed(title="XPC COMMAND HELP", description=text, color=discord.Color.blurple())
-        embed.set_footer(text="Made By EthanCoys")
-        await interaction.response.send_message(embed=embed)
+        force_access = administrator or any(
+            role.id in self.db.force_role_ids(interaction.guild_id) for role in member.roles
+        )
+        owner_access = global_owner or member.id == interaction.guild.owner_id
 
-    team_group = app_commands.Group(name="team", description="Configure club teams", guild_only=True)
+        embed = discord.Embed(
+            title="XPC COMMAND CENTRE",
+            description="A clean command list based on your roles and permissions.",
+            color=discord.Color.blurple(),
+        )
+        embed.add_field(
+            name="Everyone",
+            value=(
+                "`/myoffers` `/uploadstats` `/totwlist` `/results` `/loans`\n"
+                "`/franchiseowners` `/invites` `/teams` `/help`"
+            ),
+            inline=False,
+        )
+        if manager_access:
+            embed.add_field(
+                name="Team Management",
+                value="`/offer` `/release` `/roster` `/canceloffer` `/result`",
+                inline=False,
+            )
+        if force_access:
+            embed.add_field(
+                name="Authorised Staff",
+                value=(
+                    "`/forcesign` `/forcerelease` `/forcepromote` `/forcedemote`\n"
+                    "`/transfer` `/loan` `/endloan` `/poll`"
+                ),
+                inline=False,
+            )
+        if franchise_access:
+            embed.add_field(
+                name="Franchise Owners",
+                value=(
+                    "**Rosters:** `/allrosters` `/addtoroster` `/syncroster` `/teamoffers`\n"
+                    "**League:** `/standings` `/resultchannel` `/importresults` `/updateresult` `/deleteresult` `/updatetable` `/resettable`\n"
+                    "**TOTW:** `/statschannel` `/statsuploads` `/totwsetweek`\n"
+                    "**Teams:** `/editteam` `/transferownership` `/promote` `/demoteco`\n"
+                    "**Control:** `/openwindow` `/closewindow` `/recallloan` `/blacklist` `/removeblacklist` `/blacklistlist` `/logstyle`"
+                ),
+                inline=False,
+            )
+        if administrator:
+            embed.add_field(
+                name="Administrator Setup",
+                value=(
+                    "`/quicksetup` `/config_setup` `/addteam` `/setteamlogo` `/removeteam`\n"
+                    "`/budgetsetup` `/setbudget` `/budgets` `/forceconfig` `/pollconfig`\n"
+                    "`/signingremoverole` `/rulesembed` `/welcomesetup` `/welcometest`\n"
+                    "`/moderationsetup` `/applicationsetup` `/ticketsetup` `/rolesaversetup`\n"
+                    "`/channelbackup` `/channelbackups` `/restorechannel` `/debug` `/endseason`"
+                ),
+                inline=False,
+            )
+            embed.add_field(
+                name="Moderation",
+                value="`/warn` `/warnings` `/kick` `/ban` `/timeout` `/purge`",
+                inline=False,
+            )
+        if owner_access:
+            embed.add_field(
+                name="Server Owner",
+                value=(
+                    "`/franchiseconfig` `/appointfranchiseowner` `/removefranchiseowner`\n"
+                    "`/botlogsetup` `/botlogdisable`"
+                ),
+                inline=False,
+            )
+        embed.set_footer(text="Only the sections you can manage are shown — Made By EthanCoys")
+        await interaction.response.send_message(embed=embed)
 
     @app_commands.command(name="addteam", description="Create a new team (Administrator only)")
     @app_commands.guild_only()
@@ -3120,29 +3189,9 @@ class ClubManagement(commands.Cog):
         text = f"Removed **{name}**." if removed else "That team was not found."
         await interaction.response.send_message(text, ephemeral=True)
 
-    @team_group.command(name="add", description="Connect a team name to a Discord role")
-    @owner_or_permissions(administrator=True)
-    async def team_add(self, interaction: discord.Interaction, name: str, role: discord.Role):
-        if role.is_default() or role.managed:
-            await interaction.response.send_message("Choose a normal assignable role.", ephemeral=True)
-            return
-        try:
-            self.db.add_team(interaction.guild_id, name, role.id)
-        except sqlite3.IntegrityError:
-            await interaction.response.send_message("That team name or role is already configured.", ephemeral=True)
-            return
-        await interaction.response.send_message(f"Added **{name.strip()}** using {role.mention}.")
-
-    @team_group.command(name="remove", description="Remove a configured team")
-    @owner_or_permissions(administrator=True)
-    @app_commands.autocomplete(name=team_autocomplete)
-    async def team_remove(self, interaction: discord.Interaction, name: str):
-        removed = self.db.remove_team(interaction.guild_id, name)
-        text = f"Removed **{name}**." if removed else "That team was not found."
-        await interaction.response.send_message(text, ephemeral=True)
-
-    @team_group.command(name="list", description="List configured teams")
-    async def team_list(self, interaction: discord.Interaction):
+    @app_commands.command(name="teams", description="Show every configured club and its Discord role")
+    @app_commands.guild_only()
+    async def teams_command(self, interaction: discord.Interaction):
         teams = self.db.teams(interaction.guild_id)
         text = "\n".join(f"- **{row['name']}** — <@&{row['role_id']}>" for row in teams)
         await interaction.response.send_message(text or "No teams are configured yet.")
