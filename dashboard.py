@@ -216,25 +216,6 @@ class Dashboard:
         }
         return web.json_response({"commands": commands, "teams": teams, "roles": roles, "channels": channels, "members": members, "configuration": configuration, "logs": logs, "fixtures": fixtures, "trophies": trophies, "trophy_winners": winners, "results": results, "standings": standings, "transfer_window_open": self.db.transfer_window_open(guild_id)})
 
-    async def public_league(self, request):
-        guild_id = int(request.query.get("guild_id", "0"))
-        guild = self.bot.get_guild(guild_id)
-        if guild is None: raise web.HTTPNotFound(text="League server not found")
-        raw_teams = self.db.teams(guild_id)
-        teams = []
-        for team in raw_teams:
-            role = guild.get_role(int(team["role_id"]))
-            owner = guild.get_member(int(team["owner_id"] or 0))
-            teams.append({"name": team["name"], "role_id": str(team["role_id"]), "role_name": role.name if role else team["name"], "colour": f"#{role.colour.value:06x}" if role and role.colour.value else "#7387ff", "owner": owner.name if owner else None, "owner_id": str(team["owner_id"]) if team["owner_id"] else None, "logo_url": team["logo_url"], "budget": self.db.team_budget(guild_id, team["name"]), "roster_cap": team["roster_cap"], "roster_size": len(self.db.team_member_ids(guild_id, team["name"]))})
-        week = self.db.totw_week(guild_id); submissions = self.db.totw_submissions(guild_id, week); totw = []
-        for group, label, count in (("GK","GK",1),("CB/FB","DEF",3),("CDM","CDM",2),("CAM","CAM",1),("WM","WM",2),("ST","ST",2)):
-            for row in [r for r in submissions if r["position_group"] == group][:count]:
-                member = guild.get_member(int(row["user_id"]))
-                totw.append({"position": label, "user_id": str(row["user_id"]), "username": member.name if member else f"Player {row['user_id']}", "team": row["team_name"], "score": row["score"]})
-        results = [dict(row) for row in self.db.results(guild_id)]
-        payload = {"league": {"id": str(guild.id), "name": guild.name, "icon_url": str(guild.icon.url) if guild.icon else None}, "teams": teams, "standings": adjusted_league_table([t["name"] for t in teams], results, self.db.standings_adjustments(guild_id)), "fixtures": [dict(row) for row in self.db.fixtures(guild_id)], "results": results, "totw": {"week": week, "players": totw}, "trophies": [dict(row) for row in self.db.trophies(guild_id)], "trophy_winners": [dict(row) for row in self.db.trophy_winners(guild_id)]}
-        response = web.json_response(payload); response.headers["Access-Control-Allow-Origin"] = "*"; response.headers["Cache-Control"] = "public, max-age=30"; return response
-
     async def add_fixture(self, request):
         self.require_api(request); data = await request.json(); guild_id = int(data["guild_id"]); home = str(data.get("home", "")); away = str(data.get("away", "")); kickoff = str(data.get("kickoff", "")); competition = str(data.get("competition", "League")).strip() or "League"
         if not self.db.team(guild_id, home) or not self.db.team(guild_id, away) or home.lower() == away.lower(): raise web.HTTPBadRequest(text="Choose two different configured teams.")
@@ -466,6 +447,6 @@ class Dashboard:
 
     async def start(self) -> None:
         app = web.Application(client_max_size=1024 * 1024)
-        app.add_routes([web.get("/", self.home), web.get("/login", self.login_page), web.post("/login", self.login), web.post("/logout", self.logout), web.get("/terms", self.terms), web.get("/terms-of-service", self.terms), web.get("/privacy", self.privacy), web.get("/privacy-policy", self.privacy), web.post("/api/desktop/login", self.desktop_login), web.get("/api/guilds", self.guilds), web.get("/api/state", self.state), web.get("/api/public/league", self.public_league), web.post("/api/toggle", self.toggle), web.post("/api/toggle-all", self.toggle_all), web.post("/api/result-update", self.update_result), web.post("/api/result-delete", self.delete_result), web.post("/api/standings-update", self.update_standings), web.post("/api/standings-reset", self.reset_standings), web.post("/api/server-setup", self.server_setup), web.post("/api/budget", self.budget), web.post("/api/budgets-bulk", self.budgets_bulk), web.post("/api/team", self.add_team), web.post("/api/team-edit", self.edit_team), web.post("/api/team-delete", self.delete_team), web.post("/api/team-logo", self.team_logo), web.post("/api/fixture", self.add_fixture), web.post("/api/trophy", self.add_trophy), web.post("/api/trophy-award", self.award_trophy), web.post("/api/window", self.window), web.get("/manifest.json", self.manifest), web.get("/sw.js", self.service_worker)])
+        app.add_routes([web.get("/", self.home), web.get("/login", self.login_page), web.post("/login", self.login), web.post("/logout", self.logout), web.get("/terms", self.terms), web.get("/terms-of-service", self.terms), web.get("/privacy", self.privacy), web.get("/privacy-policy", self.privacy), web.post("/api/desktop/login", self.desktop_login), web.get("/api/guilds", self.guilds), web.get("/api/state", self.state), web.post("/api/toggle", self.toggle), web.post("/api/toggle-all", self.toggle_all), web.post("/api/result-update", self.update_result), web.post("/api/result-delete", self.delete_result), web.post("/api/standings-update", self.update_standings), web.post("/api/standings-reset", self.reset_standings), web.post("/api/server-setup", self.server_setup), web.post("/api/budget", self.budget), web.post("/api/budgets-bulk", self.budgets_bulk), web.post("/api/team", self.add_team), web.post("/api/team-edit", self.edit_team), web.post("/api/team-delete", self.delete_team), web.post("/api/team-logo", self.team_logo), web.post("/api/fixture", self.add_fixture), web.post("/api/trophy", self.add_trophy), web.post("/api/trophy-award", self.award_trophy), web.post("/api/window", self.window), web.get("/manifest.json", self.manifest), web.get("/sw.js", self.service_worker)])
         self.runner = web.AppRunner(app); await self.runner.setup(); site = web.TCPSite(self.runner, "0.0.0.0", int(os.getenv("PORT", "8080"))); await site.start()
 
