@@ -4,7 +4,7 @@ import json
 import os
 import re
 import sqlite3
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Literal
 
@@ -882,9 +882,159 @@ class ClubManagement(commands.Cog):
         if isinstance(channel, discord.TextChannel):
             await channel.send(embed=discord.Embed(title=title, description=description, color=color, timestamp=discord.utils.utcnow()).set_footer(text="Made By EthanCoys"))
 
+    @staticmethod
+    def result_message_text(message: discord.Message) -> str:
+        """Collect visible result text from a normal message or an embed."""
+        parts = [message.content or ""]
+        for embed in message.embeds:
+            parts.extend((embed.author.name or "", embed.title or "", embed.description or ""))
+            for field in embed.fields:
+                parts.extend((field.name or "", field.value or ""))
+            if embed.footer:
+                parts.append(embed.footer.text or "")
+        return "\n".join(part for part in parts if part).strip()
+
+    def parse_result_message(
+        self, guild: discord.Guild, message: discord.Message
+    ) -> tuple[str, str, int, int] | None:
+        """Read two configured teams and a score from a result-channel message."""
+        text = self.result_message_text(message)
+        if not text:
+            return None
+        folded = text.casefold()
+        hits: list[tuple[int, int, str, int]] = []
+        for team in self.db.teams(guild.id):
+            aliases = {team["name"], f"<@&{team['role_id']}>"}
+            role = guild.get_role(team["role_id"])
+            if role:
+                aliases.update((role.name, f"@{role.name}"))
+            for alias in sorted(aliases, key=len, reverse=True):
+                if not alias:
+                    continue
+                escaped = re.escape(alias.casefold())
+                if alias.startswith("<@&"):
+                    pattern = escaped
+                else:
+                    pattern = rf"(?<![\w]){escaped}(?![\w])"
+                for match in re.finditer(pattern, folded):
+                    hits.append((match.start(), match.end(), team["name"], len(alias)))
+
+        # Prefer the longest configured name when one team name contains another.
+        filtered_hits = []
+        for hit in hits:
+            if any(
+                other[0] <= hit[0] and hit[1] <= other[1] and other[3] > hit[3]
+                for other in hits
+            ):
+                continue
+            if (hit[0], hit[1], hit[2]) not in {
+                (item[0], item[1], item[2]) for item in filtered_hits
+            }:
+                filtered_hits.append(hit)
+        filtered_hits.sort(key=lambda item: (item[0], item[1]))
+        if len({hit[2].casefold() for hit in filtered_hits}) < 2:
+            return None
+
+        scores = list(re.finditer(r"(?<!\d)(\d{1,2})\s*[-–—:]\s*(\d{1,2})(?!\d)", text))
+        if not scores:
+            return None
+
+        candidates = []
+        for score in scores:
+            for first_index, first in enumerate(filtered_hits):
+                for second in filtered_hits[first_index + 1:]:
+                    if first[2].casefold() == second[2].casefold():
+                        continue
+                    if first[1] <= score.start() and score.end() <= second[0]:
+                        priority = 0
+                        distance = (score.start() - first[1]) + (second[0] - score.end())
+                    elif second[1] <= score.start():
+                        priority = 1
+                        distance = score.start() - second[1]
+                    elif score.end() <= first[0]:
+                        priority = 2
+                        distance = first[0] - score.end()
+                    else:
+                        priority = 3
+                        distance = abs(first[0] - score.start()) + abs(second[1] - score.end())
+                    candidates.append((priority, distance, score.start(), first, second, score))
+        if not candidates:
+            return None
+        _, _, _, home, away, score = min(candidates, key=lambda item: item[:3])
+        return home[2], away[2], int(score.group(1)), int(score.group(2))
+
+    @staticmethod
+    def result_message_is_after_cutoff(message: discord.Message, config) -> bool:
+        cutoff = config["import_after"] if config else None
+        if not cutoff:
+            return True
+        try:
+            parsed = datetime.fromisoformat(str(cutoff).replace(" ", "T"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return message.created_at > parsed
+        except (TypeError, ValueError):
+            return True
+
+    async def sync_result_message(self, message: discord.Message) -> str:
+        """Synchronise one Discord result message with the league table."""
+        if not message.guild or not isinstance(message.channel, discord.TextChannel):
+            return "ignored"
+        config = self.db.result_import_config(message.guild.id)
+        if not config or message.channel.id != config["channel_id"]:
+            return "ignored"
+        if not self.result_message_is_after_cutoff(message, config):
+            return "before_cutoff"
+        parsed = self.parse_result_message(message.guild, message)
+        existing = self.db.imported_result(message.guild.id, message.id)
+        if parsed is None:
+            if existing and self.db.delete_imported_result(message.guild.id, message.id):
+                self.db.add_audit(message.guild.id, message.author.id, "Result import removed", f"Message {message.id}")
+                return "removed"
+            return "unrecognised"
+        home_team, away_team, home_score, away_score = parsed
+        status = self.db.upsert_imported_result(
+            message.guild.id,
+            home_team,
+            away_team,
+            home_score,
+            away_score,
+            message.author.id,
+            message.channel.id,
+            message.id,
+            message.created_at.isoformat(),
+        )
+        if status in {"added", "updated"}:
+            self.db.add_audit(
+                message.guild.id,
+                message.author.id,
+                f"Result import {status}",
+                f"{home_team} {home_score}-{away_score} {away_team} from message {message.id}",
+            )
+        return status
+
+    async def scan_result_history(self, channel: discord.TextChannel) -> dict[str, int]:
+        counts = {
+            "checked": 0, "added": 0, "updated": 0, "unchanged": 0,
+            "removed": 0, "unrecognised": 0, "before_cutoff": 0,
+        }
+        async for message in channel.history(limit=None, oldest_first=True):
+            counts["checked"] += 1
+            if self.bot.user and message.author.id == self.bot.user.id:
+                counts["unrecognised"] += 1
+                continue
+            status = await self.sync_result_message(message)
+            if status in counts:
+                counts[status] += 1
+        return counts
+
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
-        if not message.guild or message.author.bot or not isinstance(message.author, discord.Member):
+        if not message.guild:
+            return
+        if not self.bot.user or message.author.id != self.bot.user.id:
+            await self.sync_result_message(message)
+        if message.author.bot or not isinstance(message.author, discord.Member):
             return
         config = self.db.moderation_config(message.guild.id)
         if not config or not config["scam_protection"] or message.author.guild_permissions.administrator:
@@ -904,6 +1054,23 @@ class ClubManagement(commands.Cog):
         except discord.Forbidden:
             action = "Message deleted; bot could not ban the member"
         await self.send_mod_log(message.guild, "Automatic Scam Protection", f"{message.author} (`{message.author.id}`)\nChannel: {message.channel.mention}\nAction: **{action}**\nMatched an image-based money scam phrase.", discord.Color.red())
+
+    @commands.Cog.listener()
+    async def on_message_edit(self, before: discord.Message, after: discord.Message) -> None:
+        if after.guild and (not self.bot.user or after.author.id != self.bot.user.id):
+            await self.sync_result_message(after)
+
+    @commands.Cog.listener()
+    async def on_raw_message_delete(self, payload: discord.RawMessageDeleteEvent) -> None:
+        if payload.guild_id is None:
+            return
+        config = self.db.result_import_config(payload.guild_id)
+        if not config or payload.channel_id != config["channel_id"]:
+            return
+        if self.db.delete_imported_result(payload.guild_id, payload.message_id):
+            self.db.add_audit(
+                payload.guild_id, None, "Result import deleted", f"Message {payload.message_id} was deleted"
+            )
 
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member) -> None:
@@ -2335,6 +2502,89 @@ class ClubManagement(commands.Cog):
         self.db.finish_loan(interaction.guild_id, player.id)
         await interaction.response.send_message(f"Recalled {player.mention} to {parent_role.mention}.", ephemeral=True)
 
+    @app_commands.command(name="resultchannel", description="Set a results channel and count its complete message history")
+    @app_commands.guild_only()
+    async def resultchannel(self, interaction: discord.Interaction, channel: discord.TextChannel):
+        if not await self.require_franchise_owner(interaction):
+            return
+        if len(self.db.teams(interaction.guild_id)) < 2:
+            await interaction.response.send_message(
+                "Add at least two teams before importing results.", ephemeral=True
+            )
+            return
+        permissions = channel.permissions_for(interaction.guild.me)
+        if not permissions.view_channel or not permissions.read_message_history:
+            await interaction.response.send_message(
+                f"I need **View Channel** and **Read Message History** in {channel.mention}.",
+                ephemeral=True,
+            )
+            return
+        self.db.configure_result_import(interaction.guild_id, channel.id)
+        await interaction.response.defer()
+        try:
+            counts = await self.scan_result_history(channel)
+        except discord.Forbidden:
+            await interaction.followup.send(
+                f"I could not read {channel.mention}. Check my channel permissions and try again."
+            )
+            return
+        total = len(self.db.results(interaction.guild_id))
+        embed = discord.Embed(
+            title="RESULT HISTORY COUNTED",
+            description=(
+                f"Results channel: {channel.mention}\n\n"
+                f"**Past messages checked:** {counts['checked']}\n"
+                f"**New results counted:** {counts['added']}\n"
+                f"**Existing results skipped:** {counts['unchanged']}\n"
+                f"**Messages ignored:** {counts['unrecognised']}\n\n"
+                f"**Total matches now counted:** {total}\n"
+                "The league standings have been recalculated automatically."
+            ),
+            color=discord.Color.green(),
+        )
+        embed.set_footer(text="Future result posts and score edits in this channel update automatically")
+        await interaction.followup.send(embed=embed)
+
+    @app_commands.command(name="importresults", description="Rescan the configured results channel without double-counting")
+    @app_commands.guild_only()
+    async def importresults(self, interaction: discord.Interaction):
+        if not await self.require_franchise_owner(interaction):
+            return
+        config = self.db.result_import_config(interaction.guild_id)
+        channel = interaction.guild.get_channel(config["channel_id"]) if config else None
+        if not isinstance(channel, discord.TextChannel):
+            await interaction.response.send_message(
+                "Set a valid results channel first with `/resultchannel`.", ephemeral=True
+            )
+            return
+        await interaction.response.defer()
+        try:
+            counts = await self.scan_result_history(channel)
+        except discord.Forbidden:
+            await interaction.followup.send(
+                f"I could not read {channel.mention}. Check my channel permissions and try again."
+            )
+            return
+        details = [
+            f"**Channel:** {channel.mention}",
+            f"**Messages checked:** {counts['checked']}",
+            f"**New results:** {counts['added']}",
+            f"**Scores updated:** {counts['updated']}",
+            f"**Already counted:** {counts['unchanged']}",
+        ]
+        if counts["removed"]:
+            details.append(f"**No-longer-valid results removed:** {counts['removed']}")
+        if counts["before_cutoff"]:
+            details.append(f"**Previous-season messages skipped:** {counts['before_cutoff']}")
+        details.append(f"\n**Total matches counted:** {len(self.db.results(interaction.guild_id))}")
+        await interaction.followup.send(
+            embed=discord.Embed(
+                title="RESULT CHANNEL RESCANNED",
+                description="\n".join(details),
+                color=discord.Color.blurple(),
+            )
+        )
+
     @app_commands.command(name="result", description="Submit a league match result")
     @app_commands.guild_only()
     @app_commands.autocomplete(home_team=team_autocomplete, away_team=team_autocomplete)
@@ -2484,7 +2734,8 @@ class ClubManagement(commands.Cog):
             f"Club setup: **{'Ready' if config else 'Missing'}**\n"
             f"Franchise role: **{'Ready' if league and league['franchise_role_id'] else 'Missing'}**\n"
             f"Transfer window: **{'Open' if self.db.transfer_window_open(interaction.guild_id) else 'Closed'}**\n"
-            f"Budget setup: **{'Ready' if self.db.budget_config(interaction.guild_id) else 'Missing'}**"
+            f"Budget setup: **{'Ready' if self.db.budget_config(interaction.guild_id) else 'Missing'}**\n"
+            f"Results channel: **{'Ready' if self.db.result_import_config(interaction.guild_id) else 'Missing'}**"
         )
         await interaction.response.send_message(embed=discord.Embed(title="BOT DEBUG", description=description, color=discord.Color.green()), ephemeral=True)
 
@@ -2507,7 +2758,7 @@ class ClubManagement(commands.Cog):
             "**Clubs:** `/offer` `/release` `/roster` `/allrosters` `/myoffers` `/canceloffer` `/signingremoverole`\n"
             "**Transfers:** `/transfer` `/loan` `/endloan` `/recallloan` `/loans` `/openwindow` `/closewindow`\n"
             "**Budgets:** `/budgetsetup` `/setbudget` `/budgets`\n"
-            "**League:** `/result` `/results` `/updateresult` `/deleteresult` `/standings` `/updatetable` `/resettable` `/endseason`\n"
+            "**League:** `/resultchannel` `/importresults` `/result` `/results` `/updateresult` `/deleteresult` `/standings` `/updatetable` `/resettable` `/endseason`\n"
             "**Teams:** `/addteam` `/editteam` `/removeteam` `/transferownership` `/teamoffers`\n"
             "**Franchise Owners:** `/franchiseconfig` `/appointfranchiseowner` `/removefranchiseowner` `/franchiseowners`\n"
             "**Staff:** `/promote` `/demoteco` `/forcepromote` `/forcedemote` `/forcesign` `/forcerelease`\n"
