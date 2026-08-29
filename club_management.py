@@ -1,6 +1,7 @@
 import asyncio
 import io
 import json
+import logging
 import os
 import re
 import sqlite3
@@ -14,7 +15,6 @@ from discord.ext import commands
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 from database import Database
-from stats_ocr import extract_rating
 
 
 def owner_or_permissions(**required_permissions):
@@ -37,7 +37,7 @@ def owner_or_permissions(**required_permissions):
 
 
 def get_player_roster(database: Database, guild: discord.Guild, role: discord.Role, team_name: str):
-    """Return only players recorded after accepting an offer."""
+    """Return members recorded on the roster who still have the team role."""
     members = []
     for player_id in database.team_member_ids(guild.id, team_name):
         member = guild.get_member(player_id)
@@ -1672,6 +1672,111 @@ class ClubManagement(commands.Cog):
             f"Force released {player.mention} from {role.mention}.", ephemeral=True
         )
 
+    @app_commands.command(name="addtoroster", description="Add a member directly to a team roster without an offer or signing post")
+    @app_commands.guild_only()
+    @app_commands.autocomplete(team=team_autocomplete)
+    async def addtoroster(
+        self, interaction: discord.Interaction, player: discord.Member, team: str
+    ):
+        if not await self.require_franchise_owner(interaction):
+            return
+        assert interaction.guild
+        record = self.db.team(interaction.guild_id, team)
+        role = interaction.guild.get_role(record["role_id"]) if record else None
+        if not record or not role:
+            await interaction.response.send_message(
+                "That team is not configured correctly.", ephemeral=True
+            )
+            return
+        if player.bot:
+            await interaction.response.send_message("Bots cannot be added to a roster.", ephemeral=True)
+            return
+        recorded_team = self.db.signed_team_for_user(interaction.guild_id, player.id)
+        if recorded_team and recorded_team["name"].casefold() != record["name"].casefold():
+            await interaction.response.send_message(
+                f"{player.mention} is already recorded on **{recorded_team['name']}**. "
+                "Release or move them from that roster first.",
+                ephemeral=True,
+            )
+            return
+        existing = set(self.db.team_member_ids(interaction.guild_id, record["name"]))
+        role_added = False
+        if role not in player.roles:
+            try:
+                await player.add_roles(role, reason=f"Direct roster add by {interaction.user}")
+                role_added = True
+            except discord.Forbidden:
+                await interaction.response.send_message(
+                    f"I cannot give {role.mention} to that member. Move my bot role above it.",
+                    ephemeral=True,
+                )
+                return
+        self.db.add_team_member(interaction.guild_id, record["name"], player.id)
+        self.db.add_audit(
+            interaction.guild_id,
+            interaction.user.id,
+            "Direct roster add",
+            f"{player} ({player.id}) added to {record['name']}",
+        )
+        if player.id in existing and not role_added:
+            message = f"{player.mention} is already recorded on **{record['name']}**."
+        else:
+            message = (
+                f"Added {player.mention} directly to **{record['name']}** without creating "
+                "an offer or signing announcement."
+            )
+        await interaction.response.send_message(message)
+
+    @app_commands.command(name="syncroster", description="Import every current team-role member into the saved roster")
+    @app_commands.guild_only()
+    @app_commands.autocomplete(team=team_autocomplete)
+    async def syncroster(self, interaction: discord.Interaction, team: str):
+        if not await self.require_franchise_owner(interaction):
+            return
+        assert interaction.guild
+        record = self.db.team(interaction.guild_id, team)
+        role = interaction.guild.get_role(record["role_id"]) if record else None
+        if not record or not role:
+            await interaction.response.send_message(
+                "That team is not configured correctly.", ephemeral=True
+            )
+            return
+        await interaction.response.defer()
+        try:
+            if not interaction.guild.chunked:
+                await interaction.guild.chunk(cache=True)
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+        current = set(self.db.team_member_ids(interaction.guild_id, record["name"]))
+        members = [member for member in role.members if not member.bot]
+        eligible = []
+        conflicts = []
+        for member in members:
+            recorded_team = self.db.signed_team_for_user(interaction.guild_id, member.id)
+            if recorded_team and recorded_team["name"].casefold() != record["name"].casefold():
+                conflicts.append(member)
+                continue
+            eligible.append(member)
+            self.db.add_team_member(interaction.guild_id, record["name"], member.id)
+        added = sum(member.id not in current for member in eligible)
+        self.db.add_audit(
+            interaction.guild_id,
+            interaction.user.id,
+            "Roster role sync",
+            f"{record['name']}: {added} added, {len(eligible)} recorded, {len(conflicts)} conflicts",
+        )
+        over_cap = max(0, len(eligible) - int(record["roster_cap"]))
+        warning = (
+            f"\nThe roster is **{over_cap} over** its configured limit of {record['roster_cap']}."
+            if over_cap else ""
+        )
+        await interaction.followup.send(
+            f"Imported **{added}** missing member(s) from {role.mention}.\n"
+            f"**{len(eligible)}** member(s) are now recorded on the roster."
+            + (f"\nSkipped **{len(conflicts)}** member(s) already recorded for another team." if conflicts else "")
+            + warning
+        )
+
     @app_commands.command(name="roster", description="View your team's signed roster")
     @app_commands.guild_only()
     @app_commands.autocomplete(team=team_autocomplete)
@@ -1764,6 +1869,28 @@ class ClubManagement(commands.Cog):
             f"TOTW submissions are now open for week **{week}**.", ephemeral=True
         )
 
+    @app_commands.command(name="statschannel", description="Set the only channel where players can upload TOTW stats")
+    @app_commands.guild_only()
+    async def statschannel(self, interaction: discord.Interaction, channel: discord.TextChannel):
+        if not await self.require_franchise_owner(interaction):
+            return
+        assert interaction.guild
+        permissions = channel.permissions_for(interaction.guild.me)
+        if not all((permissions.view_channel, permissions.send_messages, permissions.attach_files, permissions.embed_links)):
+            await interaction.response.send_message(
+                f"I need **View Channel**, **Send Messages**, **Attach Files**, and **Embed Links** in {channel.mention}.",
+                ephemeral=True,
+            )
+            return
+        self.db.set_totw_channel(interaction.guild_id, channel.id)
+        self.db.add_audit(
+            interaction.guild_id, interaction.user.id, "Stats channel set", f"#{channel.name} ({channel.id})"
+        )
+        await interaction.response.send_message(
+            f"TOTW stats uploads are now restricted to {channel.mention}.\n"
+            "Accepted screenshots will be stored there so Franchise Owners can view them later."
+        )
+
     @app_commands.command(name="uploadstats", description="Upload your FC performance screenshots for TOTW")
     @app_commands.guild_only()
     @app_commands.describe(
@@ -1781,6 +1908,19 @@ class ClubManagement(commands.Cog):
         defending: discord.Attachment | None = None,
     ):
         assert interaction.guild and isinstance(interaction.user, discord.Member)
+        config = self.db.totw_config(interaction.guild_id)
+        upload_channel = interaction.guild.get_channel(config["channel_id"]) if config and config["channel_id"] else None
+        if not isinstance(upload_channel, discord.TextChannel):
+            await interaction.response.send_message(
+                "A Franchise Owner must set the TOTW upload channel with `/statschannel` first.",
+                ephemeral=True,
+            )
+            return
+        if interaction.channel_id != upload_channel.id:
+            await interaction.response.send_message(
+                f"Use `/uploadstats` in {upload_channel.mention}.", ephemeral=True
+            )
+            return
         team = self.totw_team_for_member(interaction.user)
         if not team:
             await interaction.response.send_message(
@@ -1789,8 +1929,22 @@ class ClubManagement(commands.Cog):
             )
             return
         uploads = [summary, stats] + ([defending] if defending else [])
-        if any(item.content_type and not item.content_type.startswith("image/") for item in uploads):
-            await interaction.response.send_message("All stat uploads must be images.", ephemeral=True)
+        valid_extensions = {".png", ".jpg", ".jpeg", ".webp"}
+        if any(
+            (item.content_type and not item.content_type.startswith("image/"))
+            or Path(item.filename).suffix.casefold() not in valid_extensions
+            for item in uploads
+        ):
+            await interaction.response.send_message(
+                "All stat uploads must be PNG, JPG, JPEG, or WEBP images.", ephemeral=True
+            )
+            return
+        if any(item.size > interaction.guild.filesize_limit for item in uploads):
+            await interaction.response.send_message(
+                f"One of those screenshots is too large. This server allows files up to "
+                f"{interaction.guild.filesize_limit // (1024 * 1024)} MB.",
+                ephemeral=True,
+            )
             return
         if position == "CDM" and defending is None:
             await interaction.response.send_message(
@@ -1807,7 +1961,11 @@ class ClubManagement(commands.Cog):
         }
         await interaction.response.defer(ephemeral=True)
         try:
-            summary_bytes, stats_bytes = await asyncio.gather(summary.read(), stats.read())
+            from stats_ocr import extract_rating
+
+            payloads = await asyncio.gather(*(item.read() for item in uploads))
+            summary_bytes, stats_bytes = payloads[0], payloads[1]
+            defending_bytes = payloads[2] if len(payloads) > 2 else None
             summary_rating = await asyncio.to_thread(
                 extract_rating, summary_bytes, "Total"
             )
@@ -1815,12 +1973,24 @@ class ClubManagement(commands.Cog):
                 extract_rating, stats_bytes, label_by_position[position]
             )
             defending_rating = None
-            if position == "CDM" and defending:
+            if position == "CDM" and defending_bytes is not None:
                 defending_rating = await asyncio.to_thread(
-                    extract_rating, await defending.read(), "Defending"
+                    extract_rating, defending_bytes, "Defending"
                 )
         except ValueError as error:
-            await interaction.followup.send(str(error), ephemeral=True)
+            await interaction.followup.send(
+                f"I could not read those stats: {error}\n\n"
+                "Use the original full screenshot and make sure the selected tab and its rating are visible.",
+                ephemeral=True,
+            )
+            return
+        except Exception:
+            logging.exception("TOTW OCR failed for guild %s user %s", interaction.guild_id, interaction.user.id)
+            await interaction.followup.send(
+                "The stats reader had a technical problem. Your screenshots were not lost or counted. "
+                "Please try again, and contact a Franchise Owner if it keeps happening.",
+                ephemeral=True,
+            )
             return
 
         if position == "CDM":
@@ -1828,6 +1998,53 @@ class ClubManagement(commands.Cog):
         else:
             score = summary_rating * 0.60 + primary_rating * 0.40
         week = self.db.totw_week(interaction.guild.id)
+        previous = self.db.totw_submission(interaction.guild.id, week, interaction.user.id)
+        archive_embed = discord.Embed(
+            title=f"TOTW WEEK {week} — STAT SUBMISSION",
+            description=(
+                f"Player: {interaction.user.mention} / **{interaction.user.name}**\n"
+                f"Team: **{team['name']}**\n"
+                f"Position: **{position}**\n\n"
+                f"Summary: **{summary_rating:.1f}**\n"
+                f"{label_by_position[position]}: **{primary_rating:.1f}**"
+                + (f"\nDefending: **{defending_rating:.1f}**" if defending_rating is not None else "")
+                + f"\nTOTW score: **{score:.2f}**"
+            ),
+            color=discord.Color.blurple(),
+            timestamp=discord.utils.utcnow(),
+        )
+        if team["logo_url"]:
+            archive_embed.set_thumbnail(url=team["logo_url"])
+        archive_embed.set_footer(text="Saved TOTW evidence — Made By EthanCoys")
+
+        def screenshot_file(data: bytes, attachment: discord.Attachment, label: str) -> discord.File:
+            suffix = Path(attachment.filename).suffix.casefold()
+            return discord.File(
+                io.BytesIO(data), filename=f"week-{week}-{interaction.user.id}-{label}{suffix}"
+            )
+
+        archive_files = [
+            screenshot_file(summary_bytes, summary, "summary"),
+            screenshot_file(stats_bytes, stats, "main"),
+        ]
+        if defending and defending_bytes is not None:
+            archive_files.append(screenshot_file(defending_bytes, defending, "defending"))
+        try:
+            archive_message = await upload_channel.send(
+                embed=archive_embed,
+                files=archive_files,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        except (discord.Forbidden, discord.HTTPException):
+            logging.exception("Could not archive TOTW screenshots in channel %s", upload_channel.id)
+            await interaction.followup.send(
+                f"I read the stats, but I could not save the screenshots in {upload_channel.mention}. "
+                "Check my Attach Files and Send Messages permissions, then try again.",
+                ephemeral=True,
+            )
+            return
+
+        saved_urls = [attachment.url for attachment in archive_message.attachments]
         self.db.save_totw_submission(
             interaction.guild.id,
             week,
@@ -1838,31 +2055,38 @@ class ClubManagement(commands.Cog):
             primary_rating,
             defending_rating,
             round(score, 3),
-            summary.url,
-            stats.url,
-            defending.url if defending else None,
+            saved_urls[0] if len(saved_urls) > 0 else None,
+            saved_urls[1] if len(saved_urls) > 1 else None,
+            saved_urls[2] if len(saved_urls) > 2 else None,
+            upload_channel.id,
+            archive_message.id,
+        )
+        if previous and previous["archive_message_id"] and previous["archive_message_id"] != archive_message.id:
+            old_channel = interaction.guild.get_channel(previous["archive_channel_id"] or upload_channel.id)
+            if isinstance(old_channel, discord.TextChannel):
+                try:
+                    old_message = await old_channel.fetch_message(previous["archive_message_id"])
+                    await old_message.delete()
+                except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                    pass
+        self.db.add_audit(
+            interaction.guild_id,
+            interaction.user.id,
+            "TOTW stats uploaded",
+            f"Week {week}, {team['name']}, {position}, score {score:.2f}",
         )
         extra = f" | Defending {defending_rating:.1f}" if defending_rating is not None else ""
         await interaction.followup.send(
             f"Week {week} stats saved for **{team['name']}** at **{position}**.\n"
-            f"Summary {summary_rating:.1f} | {label_by_position[position]} {primary_rating:.1f}{extra} | TOTW score **{score:.2f}**",
+            f"Summary {summary_rating:.1f} | {label_by_position[position]} {primary_rating:.1f}{extra} | "
+            f"TOTW score **{score:.2f}**\n[View the saved screenshots]({archive_message.jump_url})",
             ephemeral=True,
         )
 
     @app_commands.command(name="statsuploads", description="Show the screenshots submitted for the active TOTW week")
     @app_commands.guild_only()
     async def statsuploads(self, interaction: discord.Interaction):
-        if not isinstance(interaction.user, discord.Member):
-            return
-        config = self.db.league_config(interaction.guild_id)
-        franchise_role_id = config["franchise_role_id"] if config else None
-        if not await self.is_global_owner(interaction) and (not franchise_role_id or not any(
-            role.id == franchise_role_id for role in interaction.user.roles
-        )):
-            await interaction.response.send_message(
-                "Only members with the configured Franchise Owner role can view stat uploads.",
-                ephemeral=True,
-            )
+        if not await self.require_franchise_owner(interaction):
             return
 
         week = self.db.totw_week(interaction.guild_id)
@@ -1873,31 +2097,50 @@ class ClubManagement(commands.Cog):
             )
             return
 
-        await interaction.response.send_message(
+        await interaction.response.defer()
+        await interaction.followup.send(
             embed=discord.Embed(
                 title=f"TOTW STAT UPLOADS — WEEK {week}",
-                description=f"**{len(submissions)}** player(s) have submitted their screenshots.",
+                description=(
+                    f"**{len(submissions)}** player(s) have submitted screenshots.\n"
+                    "Each submission and every uploaded image is shown below."
+                ),
                 color=discord.Color.blurple(),
             )
         )
         for row in submissions:
+            urls = [row["summary_url"], row["stats_url"], row["defending_url"]]
+            jump_url = None
+            archive_channel = interaction.guild.get_channel(row["archive_channel_id"] or 0)
+            if isinstance(archive_channel, discord.TextChannel) and row["archive_message_id"]:
+                try:
+                    archive_message = await archive_channel.fetch_message(row["archive_message_id"])
+                    fresh_urls = [attachment.url for attachment in archive_message.attachments]
+                    urls = fresh_urls + [None] * (3 - len(fresh_urls))
+                    jump_url = archive_message.jump_url
+                except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                    pass
+            player = interaction.guild.get_member(row["user_id"])
             details = discord.Embed(
-                title=f"{row['position_group']} — {row['team_name']}",
+                title=f"{player.name if player else 'Unknown player'} — {row['position_group']}",
                 description=(
                     f"Player: <@{row['user_id']}>\n"
+                    f"Team: **{row['team_name']}**\n"
                     f"Summary: **{row['summary_rating']:.1f}**\n"
                     f"Main stat: **{row['primary_rating']:.1f}**\n"
                     + (f"Defending: **{row['defending_rating']:.1f}**\n" if row["defending_rating"] is not None else "")
                     + f"TOTW score: **{row['score']:.2f}**"
+                    + (f"\n[Open the original saved submission]({jump_url})" if jump_url else "")
                 ),
                 color=discord.Color.blurple(),
             )
-            details.set_footer(text=f"Submitted by @{interaction.guild.get_member(row['user_id']).name}" if interaction.guild.get_member(row["user_id"]) else f"User ID {row['user_id']}")
-            await interaction.followup.send(embed=details)
+            details.set_footer(
+                text=f"Submitted by @{player.name}" if player else f"User ID {row['user_id']}"
+            )
             image_rows = (
-                ("Summary screenshot", row["summary_url"]),
-                ("Main stats screenshot", row["stats_url"]),
-                ("Defending screenshot", row["defending_url"]),
+                ("Summary screenshot", urls[0] if len(urls) > 0 else None),
+                ("Main stats screenshot", urls[1] if len(urls) > 1 else None),
+                ("Defending screenshot", urls[2] if len(urls) > 2 else None),
             )
             image_embeds = []
             for title, url in image_rows:
@@ -1906,10 +2149,14 @@ class ClubManagement(commands.Cog):
                     image_embed.set_image(url=url)
                     image_embeds.append(image_embed)
             if image_embeds:
-                await interaction.followup.send(embeds=image_embeds)
+                await interaction.followup.send(embeds=[details, *image_embeds])
             else:
                 await interaction.followup.send(
-                    f"No saved screenshots are available for <@{row['user_id']}> because this submission was made before image saving was added."
+                    embed=details,
+                    content=(
+                        f"No saved screenshots are available for <@{row['user_id']}> because this "
+                        "submission was made before permanent image saving was added."
+                    ),
                 )
 
     @app_commands.command(name="totwlist", description="Show the current 3-5-2 Team of the Week")
@@ -2755,7 +3002,7 @@ class ClubManagement(commands.Cog):
     @app_commands.guild_only()
     async def help_command(self, interaction: discord.Interaction):
         text = (
-            "**Clubs:** `/offer` `/release` `/roster` `/allrosters` `/myoffers` `/canceloffer` `/signingremoverole`\n"
+            "**Clubs:** `/offer` `/release` `/roster` `/allrosters` `/addtoroster` `/syncroster` `/myoffers` `/canceloffer` `/signingremoverole`\n"
             "**Transfers:** `/transfer` `/loan` `/endloan` `/recallloan` `/loans` `/openwindow` `/closewindow`\n"
             "**Budgets:** `/budgetsetup` `/setbudget` `/budgets`\n"
             "**League:** `/resultchannel` `/importresults` `/result` `/results` `/updateresult` `/deleteresult` `/standings` `/updatetable` `/resettable` `/endseason`\n"
@@ -2766,7 +3013,7 @@ class ClubManagement(commands.Cog):
             "**Community:** `/quicksetup` `/botlogsetup` `/botlogdisable` `/poll` `/pollconfig` `/ticketsetup` `/applicationsetup` `/rolesaversetup` `/welcomesetup` `/rulesembed`\n"
             "**Moderation:** `/moderationsetup` `/warn` `/warnings` `/kick` `/ban` `/timeout` `/purge`\n"
             "**Safety & recovery:** `/channelbackup` `/channelbackups` `/restorechannel` `/invites`\n"
-            "**TOTW:** `/uploadstats` `/statsuploads` `/totwlist` `/totwsetweek`"
+            "**TOTW:** `/statschannel` `/uploadstats` `/statsuploads` `/totwlist` `/totwsetweek`"
         )
         embed = discord.Embed(title="XPC COMMAND HELP", description=text, color=discord.Color.blurple())
         embed.set_footer(text="Made By EthanCoys")
