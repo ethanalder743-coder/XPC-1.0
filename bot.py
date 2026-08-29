@@ -18,6 +18,7 @@ class ProClubsBot(commands.Bot):
     def __init__(self) -> None:
         intents = discord.Intents.default()
         intents.members = True
+        intents.message_content = True
         super().__init__(command_prefix="!", intents=intents)
         database_path = os.getenv("DATABASE_PATH", "").strip()
         on_railway = bool(
